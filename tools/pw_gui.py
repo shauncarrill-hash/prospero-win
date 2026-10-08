@@ -25,7 +25,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pw_quick  # noqa: E402
 from pw_quick import QuickError  # noqa: E402
 
-TITLE = "prospero-win: send a game to your PS5"
+VERSION = "2"
+TITLE = f"prospero-win sender v{VERSION}: send a game to your PS5"
 SETTINGS = pw_quick.STATE_DIR / "settings.json"
 BASE_NAME = "prospero-base-prefix.zip"
 RESOLUTIONS = ("1920x1080", "1280x720", "2560x1440", "3840x2160", "1024x768", "800x600")
