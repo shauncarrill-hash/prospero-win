@@ -333,6 +333,11 @@ class Game:
     scaling: str = "fit"
     preset: str = ""
     show_fps: bool = True
+    # Variables for the game's process, through the prefix's HKCU\Environment
+    # (Wine's ntdll adds them to every process), and the profile's Wine log
+    # channels ([debug] winedebug).
+    environment: dict[str, str] = field(default_factory=dict)
+    winedebug: str = ""
 
     def check(self) -> None:
         if not SLUG.match(self.slug):
@@ -347,6 +352,11 @@ class Game:
             raise QuickError("the name and arguments must be one line")
         if self.preset and not re.fullmatch(r"[A-Za-z0-9_.-]+", self.preset):
             raise QuickError(f"preset {self.preset!r} is not a preset file name")
+        for name, value in self.environment.items():
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", name) or any(ch in value for ch in "\r\n\0"):
+                raise QuickError(f"{name}={value} is not an environment variable")
+        if self.winedebug and not re.fullmatch(r"[A-Za-z0-9_+,.-]+", self.winedebug):
+            raise QuickError(f"{self.winedebug!r} is not a list of Wine log channels")
 
     @property
     def folder(self) -> str:
@@ -377,6 +387,8 @@ class Game:
             lines.append("show_fps = false")
         if self.preset:
             lines += ["", "[input]", f"preset = {self.preset}"]
+        if self.winedebug:
+            lines += ["", "[debug]", f"winedebug = {self.winedebug}"]
         return "\n".join(lines) + "\n"
 
 
@@ -388,8 +400,59 @@ def suggest(source: Source) -> tuple[Game, list[Executable]]:
         raise QuickError(f"{source.path} has no Windows executable (.exe)")
     exe = exes[0]
     game = Game(name=name, slug=slugify(name), exe=exe.key, bits=exe.info.bits,
-                graphics=guess_graphics(source, exe))
+                graphics=guess_graphics(source, exe), environment=suggest_environment(source))
     return game, exes
+
+
+# .NET's runtime (Godot's C# builds, MonoGame, ...) double-maps the code it
+# generates, writable in one view and executable in another (W^X, on by
+# default since .NET 7). Under the console's Wine that never finishes: the
+# game stops right after coreclr.dll starts. Off, it maps code the classic way.
+DOTNET = {"DOTNET_EnableWriteXorExecute": "0"}
+
+
+def suggest_environment(source: Source) -> dict[str, str]:
+    names = {posixpath.basename(key).lower() for key in source.files}
+    return dict(DOTNET) if "coreclr.dll" in names else {}
+
+
+def parse_environment(text: str) -> dict[str, str]:
+    """NAME=VALUE pairs separated by ';' or new lines."""
+    out = {}
+    for item in re.split(r"[;\n]", text):
+        if item.strip():
+            name, sep, value = item.strip().partition("=")
+            if not sep:
+                raise QuickError(f"{item.strip()!r} is not NAME=VALUE")
+            out[name.strip()] = value.strip()
+    return out
+
+
+def format_environment(environment: dict[str, str]) -> str:
+    return "; ".join(f"{name}={value}" for name, value in environment.items())
+
+
+def set_environment(user_reg: bytes, environment: dict[str, str]) -> bytes:
+    """user.reg with these values in HKCU\\Environment (made if missing)."""
+    if not environment:
+        return user_reg
+    def quote(text: str) -> str:
+        return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    lines = user_reg.decode("utf-8", "surrogateescape").split("\n")
+    start = next((i for i, line in enumerate(lines) if re.match(r"^\[Environment\]( |$)", line)), None)
+    if start is None:
+        if lines and lines[-1] == "":
+            lines.pop()
+        lines += ["", "[Environment] 0"]
+        start = len(lines) - 1
+        lines.append("")
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("[")), len(lines))
+    names = {quote(name).lower() for name in environment}
+    body = [line for line in lines[start + 1:end]
+            if line.split("=", 1)[0].lower() not in names and line != ""]
+    body += [f"{quote(name)}={quote(value)}" for name, value in environment.items()]
+    lines[start + 1:end] = body + [""]
+    return "\n".join(lines).encode("utf-8", "surrogateescape")
 
 
 # --- DXVK ------------------------------------------------------------------------
@@ -489,7 +552,10 @@ class Sender:
         dirs = set(self.base.dirs)
         for key, size in self.base.files.items():
             if key in REGISTRY:
-                data = to_console(key, self.base.read(key))
+                data = self.base.read(key)
+                if key == "user.reg":
+                    data = set_environment(data, self.game.environment)
+                data = to_console(key, data)
                 items[key] = Item(key, len(data), data=data)
             else:
                 items[key] = Item(key, size, open=lambda key=key: self.base.open(key))
@@ -537,8 +603,10 @@ class Sender:
             if complete:
                 raise NeedsOverwrite(f"{self.game.slug} is already on the console. Sending it again "
                                      "replaces its saves and settings there.")
-        if overwrite:
-            state = None
+        if overwrite and state is not None:
+            # The game's files this PC sent at the same size stay; the
+            # registry, which holds the settings, goes again.
+            state = {key: size for key, size in state.items() if key not in REGISTRY}
         if self.cpu_dll is None and self.remote.size(f"{self.remote_prefix}/{CPU_DLL}") is None:
             self.cpu_dll = fetch_app_cpu_dll(self.remote)
         items, dirs = self.items()
@@ -717,6 +785,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--arguments", default="")
     parser.add_argument("--desktop", default="1920x1080")
     parser.add_argument("--preset", default="")
+    parser.add_argument("--env", action="append", default=[], metavar="NAME=VALUE",
+                        help="an environment variable for the game (added to the ones detected)")
+    parser.add_argument("--winedebug", default="", help="Wine log channels for the game, e.g. err+all,+seh")
     parser.add_argument("--dxvk", help="a DXVK release tarball, instead of downloading the pinned one")
     parser.add_argument("--overwrite", action="store_true", help="replace the console's copy of the game")
     parser.add_argument("--install-app", metavar="RELEASE_ZIP", help="install the prospero-win app instead")
@@ -751,6 +822,8 @@ def main(argv: list[str] | None = None) -> int:
         game.slug = args.slug or game.slug
         game.graphics = args.graphics or game.graphics
         game.arguments, game.desktop, game.preset = args.arguments, args.desktop, args.preset
+        game.environment.update(parse_environment("\n".join(args.env)))
+        game.winedebug = args.winedebug
         print(f"pw_quick: {game.name} ({game.slug}): {game.exe}, {game.bits}-bit, graphics {game.graphics}")
         dxvk = None
         if game.graphics == "dxvk":

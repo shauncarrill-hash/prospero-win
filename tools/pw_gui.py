@@ -98,6 +98,8 @@ class App:
         self.desktop = tk.StringVar(value=settings.get("desktop", "1920x1080"))
         self.preset = tk.StringVar()
         self.arguments = tk.StringVar()
+        self.environment = tk.StringVar()
+        self.winedebug = tk.StringVar()
         self.status = tk.StringVar(value="Pick a game to start.")
 
         outer = ttk.Frame(root, padding=16)
@@ -138,7 +140,9 @@ class App:
                                           values=list(GRAPHICS_LABELS.values()))),
                 ("Resolution", ttk.Combobox(game, textvariable=self.desktop, values=RESOLUTIONS)),
                 ("Controller preset", ttk.Entry(game, textvariable=self.preset)),
-                ("Arguments", ttk.Entry(game, textvariable=self.arguments)))
+                ("Arguments", ttk.Entry(game, textvariable=self.arguments)),
+                ("Environment", ttk.Entry(game, textvariable=self.environment)),
+                ("Wine log channels", ttk.Entry(game, textvariable=self.winedebug)))
         self.fields = []
         for index, (label, widget) in enumerate(rows, start=1):
             ttk.Label(game, text=label).grid(row=index, column=0, sticky="w", pady=3)
@@ -148,6 +152,8 @@ class App:
         self.exe_box.bind("<<ComboboxSelected>>", self.exe_changed)
         ttk.Label(game, textvariable=self.detected, style="Hint.TLabel").grid(row=3, column=2, sticky="w", padx=8)
         ttk.Label(game, text="optional, e.g. warcraft3", style="Hint.TLabel").grid(row=5, column=2, sticky="w", padx=8)
+        ttk.Label(game, text="NAME=VALUE; …", style="Hint.TLabel").grid(row=7, column=2, sticky="w", padx=8)
+        ttk.Label(game, text="for logs, e.g. +seh", style="Hint.TLabel").grid(row=8, column=2, sticky="w", padx=8)
         self.set_fields("disabled")
 
         base = ttk.LabelFrame(outer, text="Base prefix", padding=10)
@@ -304,6 +310,8 @@ class App:
             self.exe_box.configure(values=[exe.key for exe in self.exes])
             self.exe.set(game.exe)
             self.show_graphics(game.graphics)
+            self.environment.set(pw_quick.format_environment(game.environment))
+            self.winedebug.set("")
             self.busy(False)
             size = sum(self.source.files.values())
             self.status.set(f"{len(self.source.files)} files, {human(size)}. {game.bits}-bit game. "
@@ -339,7 +347,9 @@ class App:
         graphics = next(key for key, label in GRAPHICS_LABELS.items() if label == self.graphics.get())
         game = pw_quick.Game(name=name, slug=pw_quick.slugify(name), exe=exe.key, bits=exe.info.bits,
                              graphics=graphics, arguments=self.arguments.get().strip(),
-                             desktop=self.desktop.get().strip(), preset=self.preset.get().strip())
+                             desktop=self.desktop.get().strip(), preset=self.preset.get().strip(),
+                             environment=pw_quick.parse_environment(self.environment.get()),
+                             winedebug=self.winedebug.get().strip())
         game.check()
         return game
 

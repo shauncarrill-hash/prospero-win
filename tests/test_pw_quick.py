@@ -348,6 +348,53 @@ def test_folder_base_without_link_tables_is_refused() -> None:
             assert "pw_base_prefix" in str(error)
 
 
+def test_dotnet_game() -> None:
+    """A .NET game gets W^X off through the prefix's HKCU\\Environment, and a
+    second send with overwrite sends the registry again, not the game."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        make_zip(root / "Space Cadet.zip", {
+            "Mecha/mecha.exe": pe(64, ("kernel32.dll", "vulkan-1.dll"), padding=200_000),
+            "Mecha/data_Mecha_windows_x86_64/coreclr.dll": pe(64, ("kernel32.dll",)),
+            "Mecha/data_Mecha_windows_x86_64/hostfxr.dll": pe(64, ("kernel32.dll",)),
+        })
+        make_base(root)
+        console, remote = make_console(root)
+        source = pw_quick.Source(root / "Space Cadet.zip")
+        game, _ = pw_quick.suggest(source)
+        assert game.environment == {"DOTNET_EnableWriteXorExecute": "0"}, game.environment
+        game.winedebug = "err+all,+seh"
+        base = pw_quick.Source(root / "base.zip")
+        pw_quick.Sender(remote, game, source, base, state_dir=root / "state").send()
+        prefix = console / "data/prospero-win/prefixes/mecha"
+        user = (prefix / "user.reg").read_text()
+        assert '[Environment] 0\n"DOTNET_EnableWriteXorExecute"="0"\n' in user, user
+        assert "[debug]\nwinedebug = err+all,+seh\n" in (console / "data/prospero-win/profiles/mecha.profile").read_text()
+        remote.writes.clear()
+        game.environment["DOTNET_gcServer"] = "0"
+        pw_quick.Sender(remote, game, source, base, state_dir=root / "state").send(overwrite=True)
+        sent = {path.rsplit("/prefixes/mecha/", 1)[-1] for path in remote.writes}
+        assert not any(key.startswith("drive_c/") for key in sent), sent
+        assert {"system.reg", "user.reg", "userdef.reg"} <= sent, sent
+        assert '"DOTNET_gcServer"="0"' in (prefix / "user.reg").read_text()
+
+
+def test_environment_text() -> None:
+    assert pw_quick.parse_environment("A=1; B = two\nC=") == {"A": "1", "B": "two", "C": ""}
+    assert pw_quick.format_environment({"A": "1", "B": "2"}) == "A=1; B=2"
+    for bad in ("A", ):
+        try:
+            pw_quick.parse_environment(bad)
+            raise AssertionError(bad)
+        except pw_quick.QuickError:
+            pass
+    try:
+        pw_quick.Game(name="x", slug="x", exe="x.exe", bits=64, environment={"BAD NAME": "1"}).check()
+        raise AssertionError("a bad name was accepted")
+    except pw_quick.QuickError:
+        pass
+
+
 def main() -> int:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:
