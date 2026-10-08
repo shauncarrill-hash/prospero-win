@@ -55,10 +55,19 @@ git -C "$tree" clean -q -fdx
 for patch in $ordered; do
     git -C "$tree" apply --index "$patches/$patch" || fail "patch does not apply: $patch"
 done
+# What the series includes but does not carry, staged as build_wine_ps5.sh
+# stages it: the Vulkan batching runtime and the shared clock and input ABIs.
+python3 "$root/tools/stage_vk_batch.py" --source "$tree" --repo "$root" ||
+    fail "cannot stage Vulkan command-stream runtime"
+cp "$root/wine/ps5/time/pw_qpc_clock.h" "$tree/dlls/ntdll/pw_qpc_clock.h" ||
+    fail "cannot stage shared-clock ABI"
+cp "$root/wine/ps5/input/pw_key_shared.h" "$tree/dlls/win32u/pw_key_shared.h" ||
+    fail "cannot stage shared-input ABI"
 
 configure_args="--prefix=/usr --enable-archs=i386,x86_64 --disable-tests"
 stamp=$({ printf '%s\n' "$commit" "$configure_args"
-          for patch in $ordered; do cat "$patches/$patch"; done; } | sha256sum | cut -c1-64)
+          for patch in $ordered; do cat "$patches/$patch"; done
+          cat "$root"/wine/ps5/vulkan/*.[ch] "$root/wine/ps5/time/pw_qpc_clock.h" "$root/wine/ps5/input/pw_key_shared.h"; } | sha256sum | cut -c1-64)
 build=$work/build
 if [ ! -f "$build/Makefile" ] || [ "$(cat "$build/.prospero-stamp" 2>/dev/null)" != "$stamp" ]; then
     rm -rf "$build"

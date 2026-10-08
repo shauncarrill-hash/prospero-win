@@ -1,0 +1,83 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+name: sender
+
+# The sender app (tools/pw_gui.py) as one Windows .exe, and, on request, the
+# base prefix it builds games on (tools/pw_base_prefix.py). docs/SENDING_GAMES.md.
+on:
+  pull_request:
+    paths: ["tools/pw_quick.py", "tools/pw_gui.py", "tools/pw_prefix.py", "tools/pw_install.py",
+            "tools/pw_base_prefix.py", "tests/test_pw_quick.py", ".github/workflows/sender.yml"]
+  push:
+    branches: [main]
+    paths: ["tools/pw_quick.py", "tools/pw_gui.py", "tools/pw_prefix.py", "tools/pw_install.py",
+            "tools/pw_base_prefix.py", "tests/test_pw_quick.py", ".github/workflows/sender.yml"]
+  workflow_dispatch:
+    inputs:
+      base_prefix:
+        description: "Also build the base prefix (builds the pinned Wine: about an hour)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - run: python3 -m pip install pyyaml==6.0.1
+      - run: python3 tests/test_pw_quick.py
+
+  windows-exe:
+    needs: tests
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install pyinstaller==6.22.3
+      - name: One-file build
+        run: >-
+          python -m PyInstaller --onefile --windowed --name prospero-win-sender
+          --paths tools --exclude-module yaml tools/pw_gui.py
+      - name: The command line runs from the same modules
+        run: python tools/pw_quick.py --help
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prospero-win-sender
+          path: dist/prospero-win-sender.exe
+
+  base-prefix:
+    if: github.event_name == 'workflow_dispatch' && inputs.base_prefix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build dependencies
+        run: >-
+          sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-i686 gcc-mingw-w64-x86-64
+          g++-mingw-w64-i686 g++-mingw-w64-x86-64 flex bison gettext libfreetype-dev
+          libfontconfig-dev libgnutls28-dev libx11-dev libxext-dev
+      - name: The pinned Wine revision
+        run: |
+          commit=$(sed -n 's/^WINE_COMMIT=//p' tools/build_wine_ps5.sh)
+          git init -q "$RUNNER_TEMP/wine"
+          git -C "$RUNNER_TEMP/wine" fetch -q --depth 1 https://github.com/wine-mirror/wine "$commit"
+          git -C "$RUNNER_TEMP/wine" branch pinned FETCH_HEAD
+      - name: The PC's Wine
+        run: tools/build_host_wine.sh --source "$RUNNER_TEMP/wine" --work "$RUNNER_TEMP/wine-host" --jobs 4
+      - name: The base prefix
+        run: >-
+          python3 tools/pw_base_prefix.py --wine "$RUNNER_TEMP/wine-host/install/usr/bin/wine"
+          --out prospero-base-prefix.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prospero-base-prefix
+          path: prospero-base-prefix.zip

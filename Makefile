@@ -195,6 +195,7 @@ test: $(addprefix $(BUILD)/,$(TESTS)) $(BUILD)/classify_x86 $(BUILD)/dbt_differe
 	CC="$(CC)" CFLAGS="$(CFLAGS)" python3 tests/test_wine_lookup_misses.py
 	python3 tests/test_pw_install.py
 	python3 tests/test_pw_prefix.py
+	python3 tests/test_pw_quick.py
 	python3 tests/test_pw_gameplay_run.py
 	python3 tests/test_gen_prx_descriptor.py
 	CC="$(CC)" python3 tests/test_native_system_service_profile.py

@@ -490,3 +490,9 @@ wine/ps5/vulkan/pw_vk_retire.c
 wine/ps5/vulkan/pw_vk_retire.h
 
 tests/test_vk_retire.py
+tools/pw_quick.py
+tools/pw_gui.py
+tools/pw_base_prefix.py
+tests/test_pw_quick.py
+docs/SENDING_GAMES.md
+.github/workflows/sender.yml
