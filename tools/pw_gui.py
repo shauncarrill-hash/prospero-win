@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pw_quick  # noqa: E402
 from pw_quick import QuickError  # noqa: E402
 
-VERSION = "3"
+VERSION = "4"
 TITLE = f"prospero-win sender v{VERSION}: send a game to your PS5"
 SETTINGS = pw_quick.STATE_DIR / "settings.json"
 BASE_NAME = "prospero-base-prefix.zip"
@@ -101,6 +101,7 @@ class App:
         self.arguments = tk.StringVar()
         self.environment = tk.StringVar()
         self.winedebug = tk.StringVar()
+        self.checks = tk.StringVar()
         self.status = tk.StringVar(value="Pick a game to start.")
 
         outer = ttk.Frame(root, padding=16)
@@ -155,6 +156,8 @@ class App:
         ttk.Label(game, text="optional, e.g. warcraft3", style="Hint.TLabel").grid(row=5, column=2, sticky="w", padx=8)
         ttk.Label(game, text="NAME=VALUE; …", style="Hint.TLabel").grid(row=7, column=2, sticky="w", padx=8)
         ttk.Label(game, text="for logs, e.g. +seh", style="Hint.TLabel").grid(row=8, column=2, sticky="w", padx=8)
+        ttk.Label(game, textvariable=self.checks, wraplength=580, justify="left").grid(
+            row=len(rows) + 1, column=0, columnspan=3, sticky="w", pady=(6, 0))
         self.set_fields("disabled")
 
         base = ttk.LabelFrame(outer, text="Base prefix", padding=10)
@@ -310,8 +313,7 @@ class App:
             self.name.set(game.name)
             self.exe_box.configure(values=[exe.key for exe in self.exes])
             self.exe.set(game.exe)
-            self.show_graphics(game.graphics)
-            self.environment.set(pw_quick.format_environment(game.environment))
+            self.show_game(game)
             self.winedebug.set("")
             self.busy(False)
             size = sum(self.source.files.values())
@@ -332,10 +334,21 @@ class App:
         self.graphics.set(GRAPHICS_LABELS[graphics])
         self.detected.set("detected")
 
+    def show_game(self, game: pw_quick.Game) -> None:
+        """What the sender worked out for this program (tools/pw_autoconfig.py)."""
+        self.found = (game.engine, game.checks)
+        self.show_graphics(game.graphics)
+        self.arguments.set(game.arguments)
+        self.environment.set(pw_quick.format_environment(game.environment))
+        lines = [f"Engine: {game.engine}"] if game.engine else []
+        self.checks.set("\n".join(lines + [str(check) for check in game.checks]))
+
     def exe_changed(self, _event=None) -> None:
         exe = self.current_exe()
         if exe and self.source:
-            self.show_graphics(pw_quick.guess_graphics(self.source, exe))
+            exe, plan = pw_quick.autoconfigure(self.source, exe, self.exes)
+            self.exe.set(exe.key)
+            self.show_game(pw_quick.configured(self.source, exe, plan, self.name.get()))
 
     def current_exe(self) -> pw_quick.Executable | None:
         return next((exe for exe in self.exes if exe.key == self.exe.get()), None)
@@ -351,6 +364,7 @@ class App:
                              desktop=self.desktop.get().strip(), preset=self.preset.get().strip(),
                              environment=pw_quick.parse_environment(self.environment.get()),
                              winedebug=self.winedebug.get().strip())
+        game.engine, game.checks = getattr(self, "found", ("", []))
         game.check()
         return game
 
@@ -472,7 +486,10 @@ class App:
 
 def main() -> int:
     root = tk.Tk()
-    App(root)
+    app = App(root)
+    # A game's zip or folder dropped on the .exe, or named on the command line
+    if len(sys.argv) > 1 and os.path.exists(sys.argv[1]):
+        root.after(200, lambda: app.open_game(sys.argv[1]))
     root.mainloop()
     return 0
 

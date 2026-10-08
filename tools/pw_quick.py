@@ -48,6 +48,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable, Iterable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import pw_autoconfig  # noqa: E402
 import pw_prefix  # noqa: E402
 from pw_prefix import CHUNK, CPU_DLL, REGISTRY, FtpRemote, to_console  # noqa: E402
 
@@ -72,7 +73,7 @@ JUNK = ("__MACOSX/*", "*/.DS_Store", ".DS_Store", "Thumbs.db", "*/Thumbs.db", "d
 NOT_THE_GAME = re.compile(
     r"unins|setup|install|vcredist|vc_redist|dxsetup|dxwebsetup|directx|redist|crash|report|"
     r"update|patch|config|settings|dotnet|ue4prereq|prereq|easyanticheat|battleye|^be_|cleanup|"
-    r"register|activation|helper|server|dedicated|benchmark|editor|tool|7z|unrar|python|java")
+    r"launcher|register|activation|helper|server|dedicated|benchmark|editor|tool|7z|unrar|python|java")
 D3D = re.compile(r"^(d3d8|d3d9|d3d10(_1)?(core)?|d3d11|dxgi)\.dll$")
 SCAN_DLLS, SCAN_LIMIT = 400, 96 << 20
 STATE_DIR = Path(os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_STATE_HOME")
@@ -282,37 +283,60 @@ def find_executables(source: Source, name: str = "") -> list[Executable]:
     return sorted(found, key=lambda exe: (-exe.score, exe.key))
 
 
+def game_imports(source: Source, exe: Executable) -> set[str]:
+    """What the executable and the game's own DLLs import. Engines load
+    their renderer from a DLL (Half-Life's hw.dll, Source's
+    shaderapidx9.dll), so those count too. Read once per source."""
+    cache = source.__dict__.setdefault("_dll_imports", None)
+    if cache is None:
+        cache = set()
+        folder = posixpath.dirname(exe.key)
+        dlls = sorted((key for key in source.files if key.lower().endswith(".dll")),
+                      key=lambda key: (posixpath.dirname(key) != folder, key))
+        for key in dlls[:SCAN_DLLS]:
+            if source.files[key] > SCAN_LIMIT:
+                continue
+            info = pe_info(source.read(key))
+            if info:
+                cache.update(info.imports)
+        source._dll_imports = cache
+    return cache | exe.info.imports
+
+
+def graphics_of(imports: Iterable[str]) -> str | None:
+    imports = set(imports)
+    if any(D3D.match(name) for name in imports):
+        return "dxvk"
+    if "opengl32.dll" in imports:
+        return "opengl"
+    if "ddraw.dll" in imports:
+        return "auto"
+    return None
+
+
 def guess_graphics(source: Source, exe: Executable) -> str:
     """dxvk for Direct3D 8-11, opengl, or gdi, from what the executable and
-    the game's own DLLs import. Engines load their renderer from a DLL
-    (Half-Life's hw.dll, Source's shaderapidx9.dll), so those count too.
-    Direct3D wins over OpenGL: DXVK is the backend every build has."""
-    def kind(imports: Iterable[str]) -> str | None:
-        imports = set(imports)
-        if any(D3D.match(name) for name in imports):
-            return "dxvk"
-        if "opengl32.dll" in imports:
-            return "opengl"
-        if "ddraw.dll" in imports:
-            return "auto"
-        return None
-    direct = kind(exe.info.imports)
+    the game's own DLLs import. Direct3D wins over OpenGL: DXVK is the
+    backend every build has."""
+    direct = graphics_of(exe.info.imports)
     if direct == "dxvk":
         return direct
-    seen: set[str] = set()
-    folder = posixpath.dirname(exe.key)
-    dlls = sorted((key for key in source.files if key.lower().endswith(".dll")),
-                  key=lambda key: (posixpath.dirname(key) != folder, key))
-    for key in dlls[:SCAN_DLLS]:
-        if source.files[key] > SCAN_LIMIT:
-            continue
-        info = pe_info(source.read(key))
-        if info:
-            seen.update(info.imports)
-    found = kind(seen)
+    found = graphics_of(game_imports(source, exe))
     if "dxvk" in (direct, found):
         return "dxvk"
     return direct or found or "gdi"
+
+
+def autoconfigure(source: Source, exe: Executable, exes: list[Executable]) -> tuple[Executable, Plan]:
+    """The executable to start and what it needs (tools/pw_autoconfig.py)."""
+    plan = pw_autoconfig.plan(source, exe, game_imports(source, exe), guess_graphics(source, exe))
+    better = next((other for other in exes if other.key == plan.exe), None)
+    if better is not None and better is not exe:
+        followed = pw_autoconfig.plan(source, better, game_imports(source, better),
+                                      guess_graphics(source, better))
+        followed.checks = [check for check in plan.checks if plan.exe in check.text] + followed.checks
+        return better, followed
+    return exe, plan
 
 
 # --- the game and its profile --------------------------------------------------
@@ -338,6 +362,8 @@ class Game:
     # channels ([debug] winedebug).
     environment: dict[str, str] = field(default_factory=dict)
     winedebug: str = ""
+    engine: str = ""
+    checks: list = field(default_factory=list)     # pw_autoconfig.Check
 
     def check(self) -> None:
         if not SLUG.match(self.slug):
@@ -370,7 +396,11 @@ class Game:
 
     def profile(self) -> str:
         exe = f"{self.folder}/{self.exe}"
-        lines = [f"; {self.name}: generated by tools/pw_quick.py from the game's own files.",
+        lines = [f"; {self.name}: generated by tools/pw_quick.py from the game's own files."]
+        if self.engine:
+            lines.append(f"; engine: {self.engine}")
+        lines += [f"; {check}" for check in self.checks]
+        lines += [
                  "[application]", f"id = {self.slug}", f"name = {self.name}",
                  f"executable = {self.windows(exe)}",
                  f"working_directory = {self.windows(posixpath.dirname(exe))}"]
@@ -398,10 +428,16 @@ def suggest(source: Source) -> tuple[Game, list[Executable]]:
     exes = find_executables(source, name)
     if not exes:
         raise QuickError(f"{source.path} has no Windows executable (.exe)")
-    exe = exes[0]
-    game = Game(name=name, slug=slugify(name), exe=exe.key, bits=exe.info.bits,
-                graphics=guess_graphics(source, exe), environment=suggest_environment(source))
-    return game, exes
+    exe, plan = autoconfigure(source, exes[0], exes)
+    return configured(source, exe, plan, name), exes
+
+
+def configured(source: Source, exe: Executable, plan: pw_autoconfig.Plan, name: str) -> Game:
+    environment = suggest_environment(source)
+    environment.update(plan.environment)
+    return Game(name=name, slug=slugify(name), exe=exe.key, bits=exe.info.bits,
+                graphics=plan.graphics or guess_graphics(source, exe), arguments=" ".join(plan.arguments),
+                environment=environment, engine=plan.engine, checks=plan.checks)
 
 
 # .NET's runtime (Godot's C# builds, MonoGame, ...) starts by reserving
@@ -442,25 +478,63 @@ def format_environment(environment: dict[str, str]) -> str:
 
 def set_environment(user_reg: bytes, environment: dict[str, str]) -> bytes:
     """user.reg with these values in HKCU\\Environment (made if missing)."""
-    if not environment:
+    return set_values(user_reg, "Environment", environment)
+
+
+def set_values(user_reg: bytes, key: str, values: dict[str, str]) -> bytes:
+    """user.reg with these string values in HKCU\\key (made if missing)."""
+    if not values:
         return user_reg
     def quote(text: str) -> str:
-        return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+        text = text.replace("\\", "\\\\").replace('"', '\\"')
+        # Wine's .reg files spell what isn't ASCII as \xXXXX
+        return '"' + "".join(ch if ord(ch) < 0x80 else f"\\x{ord(ch):04x}" for ch in text) + '"'
+    header = "[" + key.replace("\\", "\\\\") + "]"
     lines = user_reg.decode("utf-8", "surrogateescape").split("\n")
-    start = next((i for i, line in enumerate(lines) if re.match(r"^\[Environment\]( |$)", line)), None)
+    start = next((i for i, line in enumerate(lines)
+                  if line.lower() == header.lower() or line.lower().startswith(header.lower() + " ")), None)
     if start is None:
         if lines and lines[-1] == "":
             lines.pop()
-        lines += ["", "[Environment] 0"]
+        lines += ["", f"{header} 0"]
         start = len(lines) - 1
         lines.append("")
     end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("[")), len(lines))
-    names = {quote(name).lower() for name in environment}
+    names = {quote(name).lower() for name in values}
     body = [line for line in lines[start + 1:end]
             if line.split("=", 1)[0].lower() not in names and line != ""]
-    body += [f"{quote(name)}={quote(value)}" for name, value in environment.items()]
+    body += [f"{quote(name)}={quote(value)}" for name, value in values.items()]
     lines[start + 1:end] = body + [""]
     return "\n".join(lines).encode("utf-8", "surrogateescape")
+
+
+# Fonts the console lacks (ProbeTris locale.fonts.missing), drawn with the
+# metric-compatible ones tools/pw_base_prefix.py --fonts adds, through
+# Wine's HKCU\Software\Wine\Fonts\Replacements.
+FONT_KEY = "Software\\Wine\\Fonts\\Replacements"
+FONT_REPLACEMENTS = {
+    "LiberationSans-Regular.ttf": {
+        "Arial": "Liberation Sans", "Helvetica": "Liberation Sans", "Verdana": "Liberation Sans",
+        "Segoe UI": "Liberation Sans", "Microsoft Sans Serif": "Liberation Sans", "MS Sans Serif": "Liberation Sans",
+        "Trebuchet MS": "Liberation Sans", "Calibri": "Liberation Sans"},
+    "LiberationSerif-Regular.ttf": {"Times New Roman": "Liberation Serif", "Georgia": "Liberation Serif",
+                                    "Cambria": "Liberation Serif"},
+    "LiberationMono-Regular.ttf": {"Courier New": "Liberation Mono", "Consolas": "Liberation Mono",
+                                   "Lucida Console": "Liberation Mono"},
+    "ipag.ttf": {name: "IPAGothic" for name in (
+        "MS Gothic", "MS PGothic", "MS UI Gothic", "Meiryo", "Meiryo UI", "Yu Gothic",
+        "\uff2d\uff33 \u30b4\u30b7\u30c3\u30af", "\uff2d\uff33 \uff30\u30b4\u30b7\u30c3\u30af")},
+}
+
+
+def font_replacements(base: Source) -> dict[str, str]:
+    """The replacements for the fonts the base prefix brings."""
+    have = {posixpath.basename(key).lower() for key in base.files if key.lower().startswith("drive_c/windows/fonts/")}
+    out: dict[str, str] = {}
+    for font, names in FONT_REPLACEMENTS.items():
+        if font.lower() in have:
+            out.update(names)
+    return out
 
 
 # --- DXVK ------------------------------------------------------------------------
@@ -563,6 +637,7 @@ class Sender:
                 data = self.base.read(key)
                 if key == "user.reg":
                     data = set_environment(data, self.game.environment)
+                    data = set_values(data, FONT_KEY, font_replacements(self.base))
                 data = to_console(key, data)
                 items[key] = Item(key, len(data), data=data)
             else:

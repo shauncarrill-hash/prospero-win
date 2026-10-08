@@ -96,3 +96,28 @@ python3 -m PyInstaller --onefile --windowed --name prospero-win-sender \
 ```
 
 The `sender` workflow builds `prospero-win-sender.exe` on Windows.
+
+## What the sender works out by itself
+
+When a game is picked, `tools/pw_autoconfig.py` reads its files and decides
+the engine, the program to start, the graphics backend and arguments, and
+lists checks in the window (and as comments in the profile): ✓ works, ! may
+not fully work, ✗ will not run. Its rules come from ProbeTris v6.1 on a PS5:
+
+| Game | What the sender does |
+| --- | --- |
+| Unity | DXVK, `-force-d3d11` |
+| Unreal Engine | starts the `*-Shipping.exe` (the launcher stub can't start it), DXVK, `-dx11` |
+| Godot | reads the pack: OpenGL for the Compatibility renderer and Godot 3; `--rendering-driver vulkan` when the project asks for Direct3D 12 |
+| Ren'Py, LÖVE, Java | OpenGL; Ren'Py's inner `lib/py*-windows-x86_64` program |
+| NW.js, Electron, CEF | single-process arguments; warns, since the console refuses child processes |
+| Direct3D 12 only, .NET Framework, XNA, anti-cheat | marked as not running |
+
+It also warns about Media Foundation videos (the console's Wine has no
+GStreamer), MIDI music, DirectInput-only controllers, Steam builds and DLLs
+the console lacks.
+
+`tools/pw_base_prefix.py --fonts DIR --lav DIR` makes a base prefix with
+stand-in fonts (Liberation, IPAGothic) and LAV Filters, which DirectShow
+video needs; the sender writes the font replacements into each game's
+`user.reg`.
