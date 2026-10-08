@@ -362,13 +362,14 @@ def test_dotnet_game() -> None:
         console, remote = make_console(root)
         source = pw_quick.Source(root / "Space Cadet.zip")
         game, _ = pw_quick.suggest(source)
-        assert game.environment == {"DOTNET_EnableWriteXorExecute": "0"}, game.environment
+        assert game.environment == pw_quick.DOTNET and "DOTNET_GCRegionRange" in game.environment, game.environment
         game.winedebug = "err+all,+seh"
         base = pw_quick.Source(root / "base.zip")
         pw_quick.Sender(remote, game, source, base, state_dir=root / "state").send()
         prefix = console / "data/prospero-win/prefixes/mecha"
         user = (prefix / "user.reg").read_text()
-        assert '[Environment] 0\n"DOTNET_EnableWriteXorExecute"="0"\n' in user, user
+        assert '[Environment] 0\n"DOTNET_GCRegionRange"="0xC0000000"\n' in user, user
+        assert '"DOTNET_EnableWriteXorExecute"="0"\n' in user, user
         assert "[debug]\nwinedebug = err+all,+seh\n" in (console / "data/prospero-win/profiles/mecha.profile").read_text()
         remote.writes.clear()
         game.environment["DOTNET_gcServer"] = "0"

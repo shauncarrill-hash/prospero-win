@@ -404,11 +404,19 @@ def suggest(source: Source) -> tuple[Game, list[Executable]]:
     return game, exes
 
 
-# .NET's runtime (Godot's C# builds, MonoGame, ...) double-maps the code it
-# generates, writable in one view and executable in another (W^X, on by
-# default since .NET 7). Under the console's Wine that never finishes: the
-# game stops right after coreclr.dll starts. Off, it maps code the classic way.
-DOTNET = {"DOTNET_EnableWriteXorExecute": "0"}
+# .NET's runtime (Godot's C# builds, MonoGame, ...) starts by reserving
+# address space for its garbage collector: 256 GB or more since .NET 7. The
+# console refuses reservations much past 4 GB (ProbeTris: 4 GB reserved, 16 GB
+# refused), and reports about 512 MB of RAM with none free, which the GC sizes
+# itself from. A Godot C# game froze right after coreclr.dll started. These
+# cap the GC's reservation and heap at sizes the console grants. W^X (the
+# writable and executable double mapping of generated code, on since .NET 7)
+# goes off too: one less mapping trick for the console's Wine.
+DOTNET = {
+    "DOTNET_GCRegionRange": "0xC0000000",      # 3 GB of address space for the GC
+    "DOTNET_GCHeapHardLimit": "0x80000000",    # 2 GB of heap
+    "DOTNET_EnableWriteXorExecute": "0",
+}
 
 
 def suggest_environment(source: Source) -> dict[str, str]:
