@@ -1,0 +1,39 @@
+prospero-win sender: third-party notices and where the source is
+
+prospero-win-sender.exe
+  The sender (tools/pw_gui.py, pw_quick.py, pw_autoconfig.py, pw_prefix.py)
+  is part of prospero-win, LGPL-2.1-or-later (LGPL-2.1.txt). Original project:
+  https://github.com/mpereiraesaa/prospero-win
+  This build's source, with the sender and the media DLLs' build scripts:
+  https://github.com/shauncarrill-hash/prospero-win/tree/sender-gui
+  (commit cba6ce0a4c84eefe02c31533bec57eeafe5d5674)
+  Packed with PyInstaller; contains Python 3 (Python-PSF.txt) and Tcl/Tk
+  (Tcl-Tk.txt).
+
+prospero-base-prefix.zip
+  Wine prefix made by Wine 11.17 (LGPL-2.1-or-later, LGPL-2.1.txt).
+  Source: https://gitlab.winehq.org/wine/wine (commit 490f6d5) with
+  prospero-win's patches (tools/build_host_wine.sh in the source above).
+
+  windows/system32 and syswow64: winegstreamer.dll, winedmo.dll
+    Wine's own code (LGPL-2.1-or-later) with prospero-win's changes in
+    tools/media/ and tools/build_media.sh of the source above.
+  windows/system32 and syswow64: avcodec-pw-61.dll, avformat-pw-61.dll,
+    avutil-pw-59.dll, swresample-pw-5.dll, swscale-pw-8.dll
+    FFmpeg 7.1 (LGPL-2.1-or-later, LGPL-2.1.txt), unmodified, built without
+    GPL parts by tools/build_media.sh. Source: https://github.com/FFmpeg/FFmpeg
+    (tag n7.1).
+  Program Files/LAV Filters
+    LAV Filters 0.79.2 by Hendrik Leppkes, unmodified release binaries
+    (GPL-2.0-or-later, LAV-Filters-GPL-2.0.txt).
+    Source: https://github.com/Nevcairiel/LAVFilters (tag 0.79.2).
+  windows/Fonts/Liberation*.ttf
+    Liberation fonts 2.1.5, SIL Open Font License 1.1 (Liberation-OFL-1.1.txt).
+  windows/Fonts/ipag.ttf
+    IPAGothic 003.03, IPA Font License v1.0 (IPAGothic-IPA-Font-License.txt).
+
+DXVK is downloaded from its GitHub release when a game needs it, not shipped
+here.
+
+No Microsoft or Sony files and no games are included. "PS5" names the console
+the app runs on; this project is not made or endorsed by Sony.
