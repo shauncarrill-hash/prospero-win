@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pw_quick  # noqa: E402
 from pw_quick import QuickError  # noqa: E402
 
-VERSION = "4.2"
+VERSION = "4.3"
 TITLE = f"prospero-win sender v{VERSION}: send a game to your PS5"
 SETTINGS = pw_quick.STATE_DIR / "settings.json"
 BASE_NAME = "prospero-base-prefix.zip"
@@ -34,7 +34,7 @@ GRAPHICS_LABELS = {
     "dxvk": "Direct3D 8-11 (DXVK)",
     "opengl": "OpenGL",
     "gdi": "2D (GDI)",
-    "auto": "Let the app decide",
+    "auto": "Automatic (Vulkan, DirectDraw)",
 }
 
 

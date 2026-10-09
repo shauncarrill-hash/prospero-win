@@ -140,6 +140,46 @@ def scan(source, key: str, start: int, needles: tuple[bytes, ...]) -> dict[bytes
     return found
 
 
+def project_settings(source, pack: str, start: int) -> bytes | None:
+    """The project.binary inside a Godot pack, from the pack's directory
+    (core/io/file_access_pack.cpp, formats 1-3), or None when it can't be
+    read: an encrypted directory or file, or an unknown format."""
+    import struct
+    try:
+        with source.lock, source.open(pack) as stream:
+            stream.seek(start)
+            magic, version, _major, _minor, _patch = struct.unpack("<4s4I", stream.read(20))
+            if magic != b"GDPC" or version > 3:
+                return None
+            flags = file_base = dir_offset = 0
+            if version >= 2:
+                flags, file_base = struct.unpack("<IQ", stream.read(12))
+            if version >= 3:
+                (dir_offset,) = struct.unpack("<Q", stream.read(8))
+            if flags & 1:                                  # PACK_DIR_ENCRYPTED
+                return None
+            relative = start if (flags & 2 or version < 2) else 0     # PACK_REL_FILEBASE
+            stream.read(64)                                # reserved
+            if version >= 3:
+                stream.seek(relative + dir_offset)
+            (count,) = struct.unpack("<I", stream.read(4))
+            for _ in range(min(count, 1_000_000)):
+                (length,) = struct.unpack("<I", stream.read(4))
+                path = stream.read(length).rstrip(b"\0")
+                offset, size = struct.unpack("<QQ", stream.read(16))
+                stream.read(16)                            # md5
+                file_flags = struct.unpack("<I", stream.read(4))[0] if version >= 2 else 0
+                if path.endswith(b"project.binary") and b"/" not in path.replace(b"res://", b""):
+                    if file_flags & 1 or size > 16 << 20:
+                        return None
+                    stream.seek(relative + file_base + offset)
+                    data = stream.read(size)
+                    return data if data[:4] == b"ECFG" else None
+    except (struct.error, OSError, EOFError, ValueError):
+        return None
+    return None
+
+
 def godot(plan: Plan, source, files: Files, exe: str) -> None:
     pack, start = godot_pack(source, files, exe)
     version = ""
@@ -151,9 +191,17 @@ def godot(plan: Plan, source, files: Files, exe: str) -> None:
             header = stream.read(20)
         if header[:4] == b"GDPC":
             version = str(int.from_bytes(header[8:12], "little"))
-        found = scan(source, pack, start, (b"rendering/renderer/rendering_method",
-                                           b"rendering/rendering_device/driver.windows",
-                                           b"rendering/driver/driver_name"))
+        keys = (b"rendering/renderer/rendering_method", b"rendering/rendering_device/driver.windows",
+                b"rendering/driver/driver_name")
+        settings = project_settings(source, pack, start)
+        if settings is not None:
+            found = {}
+            for key in keys:
+                at = settings.find(key)
+                if at >= 0:
+                    found[key] = settings[at + len(key):at + len(key) + 96]
+        else:
+            found = scan(source, pack, start, keys)
         method = found.get(b"rendering/renderer/rendering_method", b"")
         renderer = "gl_compatibility" if b"gl_compatibility" in method else \
                    "mobile" if b"mobile" in method else ""
@@ -176,6 +224,9 @@ def godot(plan: Plan, source, files: Files, exe: str) -> None:
         plan.warn("lighting may look a little different from the editor; for OpenGL instead, set "
                   "Graphics to OpenGL and clear the arguments")
     else:
+        # Godot loads Vulkan at run time, so its exe imports no graphics DLL
+        # and would read as GDI; "auto" leaves Vulkan to it, as GDI did.
+        plan.graphics = "auto"
         if driver == "d3d12":
             plan.arguments.append("--rendering-driver vulkan")
             plan.ok(f"{plan.engine}: the project asks for Direct3D 12, which freezes the console; "
@@ -287,6 +338,8 @@ def plan(source, exe, imports: set[str], graphics: str) -> Plan:
                    "gdi": "Windows drawing (GDI)"}[graphics])
     if "vulkan-1.dll" in exe_imports and not result.engine:
         result.ok("Vulkan works on the console")
+        if graphics == "gdi":
+            result.graphics = "auto"
 
     # Launchers
     if re.search(r"launch|start", posixpath.basename(exe.key).lower()) and not result.exe:

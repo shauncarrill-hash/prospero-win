@@ -112,3 +112,38 @@ def test_anticheat_is_stopped() -> None:
     game = suggest({"A/A.exe": pe(64, ("d3d11.dll",), padding=100_000),
                     "A/EasyAntiCheat/EasyAntiCheat_Setup.exe": pe(64, ("kernel32.dll",))})
     assert "stop" in levels(game), text(game)
+
+
+def pack_with_directory(files: dict[bytes, bytes], version: int = 3, filler: int = 300_000) -> bytes:
+    """A Godot 4.4+ pack (format 3): header, file data, then the directory."""
+    header_size = 4 + 16 + 12 + 8 + 64
+    data = b"\0" * filler
+    blobs, offsets = b"", {}
+    for path, body in files.items():
+        offsets[path] = len(data) + len(blobs)
+        blobs += body
+    file_base = header_size
+    dir_offset = header_size + len(data) + len(blobs)
+    directory = struct.pack("<I", len(files))
+    for path, body in files.items():
+        padded = path + b"\0" * (-len(path) % 4)
+        directory += struct.pack("<I", len(padded)) + padded + struct.pack("<QQ", offsets[path], len(body))
+        directory += b"\0" * 16 + struct.pack("<I", 0)
+    header = b"GDPC" + struct.pack("<IIII", version, 4, 7, 2) + struct.pack("<IQ", 0, file_base)
+    header += struct.pack("<Q", dir_offset) + b"\0" * 64
+    return header + data + blobs + directory
+
+
+def test_godot_reads_project_settings_from_the_pack_directory() -> None:
+    project = (b"ECFG" + b"\0" * 8 + b"rendering/renderer/rendering_method\0\0\x04\0\0\0"
+               b"\x10\0\0\0gl_compatibility")
+    big = pack_with_directory({b"res://icon.png": b"x" * 100, b"res://project.binary": project},
+                              filler=150 << 20)
+    game = suggest({"H/H.exe": pe(64, ("kernel32.dll",), padding=100_000), "H/H.pck": big})
+    assert game.engine == "Godot 4" and "--rendering-method mobile" in game.arguments, (game.engine, game.arguments)
+
+
+def test_godot_vulkan_game_is_automatic() -> None:
+    game = suggest({"V/V.exe": pe(64, ("kernel32.dll",), padding=100_000),
+                    "V/V.pck": pack_with_directory({b"res://project.binary": b"ECFG" + b"\0" * 8})})
+    assert game.graphics == "auto" and game.arguments == "", game
