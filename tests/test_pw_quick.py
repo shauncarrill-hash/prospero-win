@@ -406,3 +406,27 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def test_update_settings_only() -> None:
+    """A settings update rewrites the profile and nothing else."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        make_zip(root / "Mecha.zip", {"Mecha/mecha.exe": pe(64, ("kernel32.dll",), padding=200_000)})
+        make_base(root)
+        console, remote = make_console(root)
+        source, base = pw_quick.Source(root / "Mecha.zip"), pw_quick.Source(root / "base.zip")
+        game, _ = pw_quick.suggest(source)
+        sender = pw_quick.Sender(remote, game, source, base, state_dir=root / "state")
+        try:
+            sender.update_settings()
+            raise AssertionError("a game not on the console was updated")
+        except pw_quick.QuickError:
+            pass
+        sender.send()
+        remote.writes.clear()
+        game.arguments = "--rendering-method mobile"
+        pw_quick.Sender(remote, game, source, base, state_dir=root / "state").update_settings()
+        assert all(path.endswith("mecha.profile") for path in remote.writes), remote.writes
+        profile = (console / "data/prospero-win/profiles/mecha.profile").read_text()
+        assert "arguments = --rendering-method mobile" in profile, profile

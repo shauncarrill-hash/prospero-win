@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pw_quick  # noqa: E402
 from pw_quick import QuickError  # noqa: E402
 
-VERSION = "4.1"
+VERSION = "4.2"
 TITLE = f"prospero-win sender v{VERSION}: send a game to your PS5"
 SETTINGS = pw_quick.STATE_DIR / "settings.json"
 BASE_NAME = "prospero-base-prefix.zip"
@@ -260,11 +260,17 @@ class App:
                         callback(result)
                 elif kind == "overwrite":
                     self.busy(False)
-                    if messagebox.askyesno("Replace the game on the PS5?", value + "\n\nReplace it?",
-                                           icon="warning", parent=self.root):
-                        self.send(overwrite=True)
-                    else:
+                    answer = messagebox.askyesnocancel(
+                        "The game is already on the PS5",
+                        value + "\n\nYes: update its settings only (program, graphics, arguments, "
+                        "resolution, preset). Quick, and keeps its saves.\n\n"
+                        "No: replace it. Files this PC already sent at the same size are skipped, "
+                        "but its saves and Windows settings on the PS5 are replaced.",
+                        icon="question", parent=self.root)
+                    if answer is None:
                         self.status.set("Nothing was sent.")
+                    else:
+                        self.send(overwrite=not answer, settings_only=answer)
                 elif kind == "error":
                     self.busy(False)
                     self.status.set(value)
@@ -368,7 +374,7 @@ class App:
         game.check()
         return game
 
-    def send(self, overwrite: bool = False) -> None:
+    def send(self, overwrite: bool = False, settings_only: bool = False) -> None:
         try:
             host, port = self.address()
             game = self.game_settings()
@@ -391,8 +397,12 @@ class App:
             self.events.put(("status", f"Connecting to {host}:{port}…"))
             remote = pw_quick.connect(host, port)
             try:
-                pw_quick.Sender(remote, game, source, base, dxvk=dxvk, host=host, report=report,
-                                cancel=self.cancel).send(overwrite)
+                sender = pw_quick.Sender(remote, game, source, base, dxvk=dxvk, host=host, report=report,
+                                         cancel=self.cancel)
+                if settings_only:
+                    sender.update_settings()
+                else:
+                    sender.send(overwrite)
             finally:
                 try:
                     remote.close()

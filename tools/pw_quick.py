@@ -725,6 +725,20 @@ class Sender:
         self.progress.current = ""
         self.say(f"{self.game.name} is on the console: start prospero-win and pick it in the launcher")
 
+    def update_settings(self) -> None:
+        """Rewrites only the game's profile (program, graphics, arguments,
+        resolution, preset), plus DXVK's DLLs if it now needs them and the
+        console lacks them. The game's files, its registry and its saves
+        stay as they are."""
+        if not self.remote.exists(self.remote_prefix):
+            raise QuickError(f"{self.game.slug} is not on the console yet: send it first")
+        for item in (Item(key, len(data), data=data) for key, data in sorted(self.dxvk.items())):
+            if self.remote.size(f"{self.remote_prefix}/{item.key}") != item.size:
+                self.say(f"sending {item.key}")
+                self.put(item)
+        self.put_profile()
+        self.say(f"{self.game.name}'s settings are updated on the console")
+
     def check_cancel(self) -> None:
         if self.cancel.is_set():
             raise Cancelled()
@@ -873,6 +887,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--winedebug", default="", help="Wine log channels for the game, e.g. err+all,+seh")
     parser.add_argument("--dxvk", help="a DXVK release tarball, instead of downloading the pinned one")
     parser.add_argument("--overwrite", action="store_true", help="replace the console's copy of the game")
+    parser.add_argument("--settings-only", action="store_true",
+                        help="only rewrite the profile of a game already on the console")
     parser.add_argument("--install-app", metavar="RELEASE_ZIP", help="install the prospero-win app instead")
     args = parser.parse_args(argv)
 
@@ -912,7 +928,11 @@ def main(argv: list[str] | None = None) -> int:
         if game.graphics == "dxvk":
             dxvk = dxvk_files(Path(args.dxvk) if args.dxvk else fetch_dxvk())
         remote = connect(args.host, args.port)
-        Sender(remote, game, source, base, dxvk=dxvk, host=args.host, report=report).send(args.overwrite)
+        sender = Sender(remote, game, source, base, dxvk=dxvk, host=args.host, report=report)
+        if args.settings_only:
+            sender.update_settings()
+        else:
+            sender.send(args.overwrite)
     except (QuickError, OSError, *ftplib.all_errors) as error:
         print(f"pw_quick: {error}", file=sys.stderr)
         return 1
