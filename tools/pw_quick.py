@@ -63,6 +63,7 @@ GAMES = "drive_c/Games"
 # The C: and Z: drives, as pw_prefix.py's push writes a prefix's links.
 BASE_LINKS = f"dosdevices/{pw_prefix.LINK_TABLE}"
 DXVK_VERSION = "2.6.2"
+FTP_ATTEMPTS = 6
 DXVK_DLLS = ("d3d8", "d3d9", "d3d10core", "d3d11", "dxgi")
 GRAPHICS = ("auto", "gdi", "dxvk", "opengl")
 SCALING = ("fit", "integer", "stretch")
@@ -700,7 +701,7 @@ class Sender:
         self.say(f"making {len(dirs)} folders")
         for directory in sorted(dirs):
             self.check_cancel()
-            self.remote.makedirs(f"{self.remote_prefix}/{directory}")
+            self.retrying(lambda: self.remote.makedirs(f"{self.remote_prefix}/{directory}"))
         self.say(f"sending {len(items)} files ({pw_prefix.gib(self.progress.total_bytes)})")
         unsaved = 0
         try:
@@ -712,7 +713,7 @@ class Sender:
                     self.progress.skipped += 1
                     self.advance(item.size)
                     continue
-                self.put(item)
+                self.retrying(lambda: self.put(item))
                 state[item.key] = item.size
                 unsaved += 1
                 if unsaved >= pw_prefix.SAVE_EVERY_FILES:
@@ -748,6 +749,30 @@ class Sender:
         self.progress.done_bytes += size
         self.progress.done_files += files
         self.report(self.progress)
+
+    def retrying(self, step: Callable[[], None]) -> None:
+        """Runs step, and when the console stops answering or drops the
+        connection, connects again and repeats it, waiting longer each time."""
+        for attempt in range(1, FTP_ATTEMPTS + 1):
+            done_bytes, done_files = self.progress.done_bytes, self.progress.done_files
+            try:
+                step()
+                return
+            except ftplib.error_perm:
+                raise
+            except (OSError, EOFError, ftplib.Error) as error:
+                if attempt == FTP_ATTEMPTS:
+                    raise QuickError(f"the PS5 stopped answering ({error or type(error).__name__}) "
+                                     f"{attempt} times: press Send again to carry on") from error
+                self.progress.done_bytes, self.progress.done_files = done_bytes, done_files
+                self.say(f"the PS5 is slow to answer ({error or type(error).__name__}): "
+                         f"connecting again (try {attempt + 1} of {FTP_ATTEMPTS})")
+                if self.cancel.wait(min(5 * attempt, 30)):
+                    raise Cancelled() from error
+                try:
+                    self.remote.reconnect()
+                except (OSError, EOFError, ftplib.Error):
+                    pass  # the next try fails and waits again
 
     def put(self, item: Item) -> None:
         target = f"{self.remote_prefix}/{item.key}"

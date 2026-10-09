@@ -134,13 +134,17 @@ def gib(size: int) -> str:
     return f"{size / (1 << 30):.2f} GiB"
 
 
+# Seconds to wait for each answer. A busy console's ftpsrv has taken over 30.
+FTP_TIMEOUT = 120
+
+
 class FtpRemote:
     """The console's ftpsrv: MLSD lists the current directory only."""
 
     def __init__(self, host: str, port: int):
         self.host, self.port = host, port
         self.ftp = ftplib.FTP()
-        self.ftp.connect(host, port, 30)
+        self.ftp.connect(host, port, FTP_TIMEOUT)
         self.ftp.login()
         self.made: set[str] = set()
         # ftpsrv converts SELF containers on the fly unless told not to. A

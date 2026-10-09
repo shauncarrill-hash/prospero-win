@@ -396,6 +396,38 @@ def test_environment_text() -> None:
         pass
 
 
+def test_slow_console_reconnects() -> None:
+    class Flaky(DirRemote):
+        failures = 0
+        reconnects = 0
+
+        def write_stream(self, path, stream):
+            if path.endswith("table.dat") and self.failures < 2:
+                self.failures += 1
+                stream.read(1000)
+                raise TimeoutError("timed out")
+            super().write_stream(path, stream)
+
+        def reconnect(self):
+            self.reconnects += 1
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        make_game(root), make_base(root)
+        console = make_console(root)[0]
+        remote = Flaky(console)
+        waits = pw_quick.threading.Event.wait
+        pw_quick.threading.Event.wait = lambda self, timeout=None: False
+        try:
+            sender = send(root, remote)
+        finally:
+            pw_quick.threading.Event.wait = waits
+        assert remote.failures == 2 and remote.reconnects == 2
+        assert (console / "data/prospero-win/prefixes/space-cadet/drive_c/Games/space-cadet/data/table.dat"
+                ).stat().st_size == 5_000_000
+        assert sender.progress.done_bytes == sender.progress.total_bytes
+
+
 def main() -> int:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:
