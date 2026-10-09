@@ -1,0 +1,47 @@
+diff --git a/dlls/winegstreamer/main.c b/dlls/winegstreamer/main.c
+index 5cafcc1..c7ef6e9 100644
+--- a/dlls/winegstreamer/main.c
++++ b/dlls/winegstreamer/main.c
+@@ -893,7 +893,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, void *reserved)
+     if (reason == DLL_PROCESS_ATTACH)
+     {
+         DisableThreadLibraryCalls(instance);
+-        __wine_init_unix_call();
++        /* prospero-win: no Unix library to find */
+     }
+     return TRUE;
+ }
+@@ -1108,14 +1108,10 @@ HRESULT WINAPI DllRegisterServer(void)
+     if (FAILED(hr = __wine_register_resources()))
+         return hr;
+ 
+-    if (FAILED(hr = CoCreateInstance(&CLSID_FilterMapper2, NULL, CLSCTX_INPROC_SERVER,
+-            &IID_IFilterMapper2, (void **)&mapper)))
+-        return hr;
+-
+-    IFilterMapper2_RegisterFilter(mapper, &CLSID_decodebin_parser,
+-            L"GStreamer splitter filter", NULL, NULL, NULL, &reg_decodebin_parser);
+-
+-    IFilterMapper2_Release(mapper);
++    /* prospero-win: no GStreamer parser to offer DirectShow (LAV Filters' splitter
++     * does that job), so the splitter filter isn't registered. */
++    (void)mapper;
++    (void)reg_decodebin_parser;
+ 
+     return S_OK;
+ }
+diff --git a/dlls/winegstreamer/unixlib.h b/dlls/winegstreamer/unixlib.h
+index d274d6f..ac194e4 100644
+--- a/dlls/winegstreamer/unixlib.h
++++ b/dlls/winegstreamer/unixlib.h
+@@ -479,4 +479,10 @@ enum unix_funcs
+     unix_wg_funcs_count,
+ };
+ 
++/* prospero-win: no Unix side on the console. The calls go to FFmpeg in this
++ * process instead (pw_unixcall.c). */
++#undef WINE_UNIX_CALL
++#define WINE_UNIX_CALL(code, args) pw_unix_call((code), (args))
++NTSTATUS pw_unix_call(unsigned int code, void *args);
++
+ #endif /* __WINE_WINEGSTREAMER_UNIXLIB_H */

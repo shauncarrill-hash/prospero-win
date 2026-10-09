@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pw_quick  # noqa: E402
 from pw_quick import QuickError  # noqa: E402
 
-VERSION = "4.4"
+VERSION = "4.5"
 TITLE = f"prospero-win sender v{VERSION}: send a game to your PS5"
 SETTINGS = pw_quick.STATE_DIR / "settings.json"
 BASE_NAME = "prospero-base-prefix.zip"
@@ -90,7 +90,9 @@ class App:
         self.host = tk.StringVar(value=settings.get("host", ""))
         self.port = tk.StringVar(value=str(settings.get("port", 2121)))
         default_base = here() / BASE_NAME
-        self.base = tk.StringVar(value=settings.get("base") or (str(default_base) if default_base.exists() else ""))
+        # The base prefix shipped beside the program wins over a remembered one,
+        # so a new release's prefix (fonts, decoders) is used without choosing it.
+        self.base = tk.StringVar(value=str(default_base) if default_base.exists() else settings.get("base", ""))
         self.game_path = tk.StringVar()
         self.name = tk.StringVar()
         self.exe = tk.StringVar()

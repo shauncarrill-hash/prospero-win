@@ -13,8 +13,9 @@ The rules come from ProbeTris v6.1 on a PS5 (2026-10-08). What it measured:
 - vkd3d-proton's D3D12CreateDevice froze the console: no Direct3D 12.
 - No program can start another (CreateProcess error 50): launchers, and
   multi-process engines (NW.js, Electron, CEF), cannot start their game.
-- Wine has no GStreamer: Media Foundation plays no video at all, and
-  DirectShow plays only through LAV Filters (in the base prefix).
+- Wine has no GStreamer: Media Foundation plays video only through the
+  base prefix's FFmpeg decoders (tools/build_media.sh), and DirectShow
+  only through LAV Filters (also in the base prefix).
 - No MIDI device; DirectInput sees no game controller (XInput does).
 - .NET Framework 4 is absent (no Wine Mono); .NET 5+ games bring their own
   runtime and need GC limits (pw_quick.DOTNET).
@@ -259,8 +260,8 @@ def plan(source, exe, imports: set[str], graphics: str) -> Plan:
         result.arguments.append("-force-d3d11")
         result.ok(f"{result.engine}: started on Direct3D 11 through DXVK, which works on the console")
         if files.find(r"_data/streamingassets/.*" + VIDEO.pattern):
-            result.warn("its videos play through Media Foundation, which the console can't decode: "
-                        "they will be black or skipped")
+            result.warn("its videos play through Media Foundation: they need a base prefix with "
+                        "the FFmpeg decoders (sender v4.5 or later)")
     elif shipping or files.dir(r"(^|/)engine/binaries$"):
         result.engine = "Unreal Engine"
         if shipping and exe.key not in shipping:
@@ -270,8 +271,8 @@ def plan(source, exe, imports: set[str], graphics: str) -> Plan:
         result.arguments.append("-dx11")
         result.ok("Unreal Engine: started on Direct3D 11 through DXVK (-dx11), which works on the console")
         if files.find(r"/content/movies/.*" + VIDEO.pattern):
-            result.warn("its movies play through Media Foundation, which the console can't decode: "
-                        "they will be black or skipped")
+            result.warn("its movies play through Media Foundation: they need a base prefix with "
+                        "the FFmpeg decoders (sender v4.5 or later)")
     elif godot_pack(source, files, exe.key)[0] or files.has("GodotSharp.dll"):
         godot(result, source, files, exe.key)
     elif files.has("data.win") or files.has("game.unx"):
@@ -361,8 +362,8 @@ def plan(source, exe, imports: set[str], graphics: str) -> Plan:
                     "use a keyboard preset (see docs/CONTROLS.md)")
     videos = [key for key in files.find(VIDEO.pattern) if not OWN_VIDEO.search(key.lower())]
     if videos and not result.engine.startswith(("Unity", "Unreal", "Godot")):
-        result.warn("its videos play only if it uses DirectShow (through LAV Filters); "
-                    "Media Foundation video stays black")
+        result.warn("its videos play through the base prefix's decoders: LAV Filters for "
+                    "DirectShow, FFmpeg for Media Foundation (sender v4.5 or later)")
     if files.find(r"[぀-ヿ一-鿿]"):
         result.warn("Japanese or Chinese file names: Japanese text uses the prefix's Gothic font; "
                     "the console's code page is Western (1252), so older games may show garbled text")

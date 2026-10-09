@@ -24,9 +24,13 @@ Two optional extras fill gaps ProbeTris found on the console:
   LAVFilters-*-x64.zip and -x86.zip in DIR, registered for 64- and 32-bit
   programs. The console's Wine has no GStreamer, so DirectShow plays video
   only through them.
+- --media DIR adds tools/build_media.sh's output: winegstreamer.dll and
+  winedmo.dll answered by a small FFmpeg (LGPL), so Media Foundation has
+  its H.264, AAC, WMV and WMA decoders and its MP4, AVI and ASF file
+  sources again, for 64- and 32-bit programs.
 
 Usage:
-    pw_base_prefix.py --wine PATH --out prospero-base-prefix.zip [--fonts DIR] [--lav DIR]
+    pw_base_prefix.py --wine PATH --out prospero-base-prefix.zip [--fonts DIR] [--lav DIR] [--media DIR]
     pw_base_prefix.py --prefix DIR --out prospero-base-prefix.zip   # an existing clean prefix
 """
 from __future__ import annotations
@@ -94,6 +98,39 @@ def add_lav(wine: Path, prefix: Path, releases: Path) -> None:
     subprocess.run([str(server if server.is_file() else "wineserver"), "-w"], env=env, check=True)
 
 
+MEDIA_REGISTERED = ("winegstreamer.dll", "wmadmod.dll")
+MEDIA_SETTINGS = """Windows Registry Editor Version 5.00
+
+[HKEY_CURRENT_USER\\Software\\Wine\\DllOverrides]
+"winedmo"="native"
+
+[HKEY_CURRENT_USER\\Software\\Wine\\MediaFoundation]
+"DisableGstByteStreamHandler"=dword:00000001
+"""
+
+
+def add_media(wine: Path, prefix: Path, media: Path) -> None:
+    env = dict(os.environ, USER="prospero", LOGNAME="prospero", WINEPREFIX=str(prefix), WINEDEBUG="-all")
+    for arch, system in (("x86_64-windows", "system32"), ("i386-windows", "syswow64")):
+        source = media / arch
+        dlls = sorted(source.glob("*.dll"))
+        if not any(dll.name == "winegstreamer.dll" for dll in dlls):
+            raise SystemExit(f"pw_base_prefix: {source} has no winegstreamer.dll (tools/build_media.sh)")
+        target = prefix / "drive_c" / "windows" / system
+        for dll in dlls:
+            shutil.copyfile(dll, target / dll.name)
+    reg = prefix / "drive_c" / "pw-media.reg"
+    reg.write_text(MEDIA_SETTINGS.replace("\n", "\r\n"), encoding="utf-16")
+    subprocess.run([str(wine), "regedit", "/S", "C:\\pw-media.reg"], env=env, check=True)
+    for system in ("system32", "syswow64"):
+        regsvr32 = f"C:\\windows\\{system}\\regsvr32.exe"
+        for name in MEDIA_REGISTERED:
+            subprocess.run([str(wine), regsvr32, "/s", f"C:\\windows\\{system}\\{name}"], env=env, check=True)
+    server = wine.with_name("wineserver")
+    subprocess.run([str(server if server.is_file() else "wineserver"), "-w"], env=env, check=True)
+    reg.unlink()
+
+
 def write_zip(prefix: Path, out: Path) -> int:
     files, dirs, links = pw_prefix.local_tree(prefix)
     if "system.reg" not in files or "user.reg" not in files:
@@ -123,9 +160,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--fonts", type=Path, help="a folder of TrueType fonts to add")
     parser.add_argument("--lav", type=Path, help="a folder with LAV Filters' x64 and x86 release zips")
+    parser.add_argument("--media", type=Path, help="tools/build_media.sh's output folder")
     args = parser.parse_args(argv)
-    if args.lav and not args.wine:
-        parser.error("--lav needs --wine, to register the filters")
+    if (args.lav or args.media) and not args.wine:
+        parser.error("--lav and --media need --wine, to register the decoders")
     if args.prefix:
         if args.fonts:
             add_fonts(args.prefix, args.fonts)
@@ -139,6 +177,9 @@ def main(argv: list[str] | None = None) -> int:
             if args.lav:
                 add_lav(Path(os.path.abspath(args.wine)), work / "prefix", args.lav)
                 print("pw_base_prefix: LAV Filters registered")
+            if args.media:
+                add_media(Path(os.path.abspath(args.wine)), work / "prefix", args.media)
+                print("pw_base_prefix: Media Foundation decoders registered")
             count = write_zip(work / "prefix", args.out)
         finally:
             shutil.rmtree(work, ignore_errors=True)

@@ -113,11 +113,12 @@ not fully work, ✗ will not run. Its rules come from ProbeTris v6.1 on a PS5:
 | NW.js, Electron, CEF | single-process arguments; warns, since the console refuses child processes |
 | Direct3D 12 only, .NET Framework, XNA, anti-cheat | marked as not running |
 
-It also warns about Media Foundation videos (the console's Wine has no
-GStreamer), MIDI music, DirectInput-only controllers, Steam builds and DLLs
+It also notes Media Foundation videos (decoded by the base prefix's FFmpeg
+DLLs, see [video decoding](VIDEO_DECODING.md)), MIDI music, DirectInput-only controllers, Steam builds and DLLs
 the console lacks.
 
-`tools/pw_base_prefix.py --fonts DIR --lav DIR` makes a base prefix with
-stand-in fonts (Liberation, IPAGothic) and LAV Filters, which DirectShow
-video needs; the sender writes the font replacements into each game's
+`tools/pw_base_prefix.py --fonts DIR --lav DIR --media DIR` makes a base
+prefix with stand-in fonts (Liberation, IPAGothic), LAV Filters, which
+DirectShow video needs, and the Media Foundation decoders from
+`tools/build_media.sh`; the sender writes the font replacements into each game's
 `user.reg`.

@@ -1,0 +1,215 @@
+diff --git a/dlls/winedmo/main.c b/dlls/winedmo/main.c
+index 671e632..96c85c0 100644
+--- a/dlls/winedmo/main.c
++++ b/dlls/winedmo/main.c
+@@ -94,6 +94,28 @@ static NTSTATUS WINAPI read_callback( void *args, ULONG size )
+ }
+ 
+ 
++NTSTATUS pw_stream_seek( UINT64 handle, UINT64 *pos )
++{
++    struct stream_context *context = get_stream_context( handle );
++    struct winedmo_stream *stream = get_stream( context->stream );
++    NTSTATUS status = STATUS_NOT_IMPLEMENTED;
++
++    if (!stream->p_seek || (status = stream->p_seek( stream, pos )))
++        WARN( "Failed to seek stream %p, status %#lx\n", stream, status );
++    return status;
++}
++
++NTSTATUS pw_stream_read( UINT64 handle, ULONG *size )
++{
++    struct stream_context *context = get_stream_context( handle );
++    struct winedmo_stream *stream = get_stream( context->stream );
++    NTSTATUS status = STATUS_NOT_IMPLEMENTED;
++
++    if (!stream->p_read || (status = stream->p_read( stream, context->buffer, size )))
++        WARN( "Failed to read from stream %p, status %#lx\n", stream, status );
++    return status;
++}
++
+ BOOL WINAPI DllMain( HINSTANCE instance, DWORD reason, void *reserved )
+ {
+     TRACE( "instance %p, reason %lu, reserved %p\n", instance, reason, reserved );
+@@ -109,8 +131,7 @@ BOOL WINAPI DllMain( HINSTANCE instance, DWORD reason, void *reserved )
+ 
+         DisableThreadLibraryCalls( instance );
+ 
+-        status = __wine_init_unix_call();
+-        if (!status) status = UNIX_CALL( process_attach, &params );
++        status = UNIX_CALL( process_attach, &params );
+         if (status) WARN( "Failed to init unixlib, status %#lx\n", status );
+     }
+ 
+diff --git a/dlls/winedmo/unixlib.c b/dlls/winedmo/unixlib.c
+index 9fe3d0e..2819565 100644
+--- a/dlls/winedmo/unixlib.c
++++ b/dlls/winedmo/unixlib.c
+@@ -17,10 +17,10 @@
+  */
+ 
+ #if 0
+-#pragma makedep unix
++/* prospero-win: built into the Windows DLL */
+ #endif
+ 
+-#include "config.h"
++/* config.h: not in a Windows build */
+ 
+ #ifdef HAVE_FFMPEG
+ 
+@@ -36,8 +36,6 @@ int64_t unix_seek_callback( void *opaque, int64_t offset, int whence )
+ {
+     struct seek_callback_params params = {.dispatch = {.callback = seek_callback}, .context = (UINT_PTR)opaque};
+     struct stream_context *context = opaque;
+-    void *ret_ptr;
+-    ULONG ret_len;
+     int status;
+ 
+     TRACE( "opaque %p, offset %#"PRIx64", whence %#x\n", opaque, offset, whence );
+@@ -53,10 +51,11 @@ int64_t unix_seek_callback( void *opaque, int64_t offset, int whence )
+         {
+             /* seek stream to multiples of buffer capacity */
+             params.offset = (offset / context->capacity) * context->capacity;
+-            status = KeUserDispatchCallback( &params.dispatch, sizeof(params), &ret_ptr, &ret_len );
+-            if (status || ret_len != sizeof(UINT64)) return AVERROR( EINVAL );
+-            if (*(UINT64 *)ret_ptr == params.offset) break;
+-            offset = *(UINT64 *)ret_ptr;
++            UINT64 pos = params.offset;
++            status = pw_stream_seek( params.context, &pos );
++            if (status) return AVERROR( EINVAL );
++            if (pos == params.offset) break;
++            offset = pos;
+         }
+         context->size = 0;
+     }
+@@ -68,14 +67,12 @@ int64_t unix_seek_callback( void *opaque, int64_t offset, int whence )
+ static int stream_context_read( struct stream_context *context )
+ {
+     struct read_callback_params params = {.dispatch = {.callback = read_callback}, .context = (UINT_PTR)context};
+-    void *ret_ptr;
+-    ULONG ret_len;
+     int status;
+ 
+-    params.size = context->capacity;
+-    status = KeUserDispatchCallback( &params.dispatch, sizeof(params), &ret_ptr, &ret_len );
+-    if (status || ret_len != sizeof(ULONG)) return AVERROR( EINVAL );
+-    context->size = *(ULONG *)ret_ptr;
++    ULONG size = context->capacity;
++    status = pw_stream_read( params.context, &size );
++    if (status) return AVERROR( EINVAL );
++    context->size = size;
+     return 0;
+ }
+ 
+@@ -110,7 +107,10 @@ static void vlog( void *ctx, int level, const char *fmt, va_list va_args )
+     enum __wine_debug_class dbcl = __WINE_DBCL_TRACE;
+     if (level <= AV_LOG_ERROR) dbcl = __WINE_DBCL_ERR;
+     if (level <= AV_LOG_WARNING) dbcl = __WINE_DBCL_WARN;
+-    wine_dbg_vlog( dbcl, __wine_dbch___default, __func__, fmt, va_args );
++    char buffer[1024];
++    if (!(__wine_dbg_get_channel_flags( __wine_dbch___default ) & (1 << dbcl))) return;
++    vsnprintf( buffer, sizeof(buffer), fmt, va_args );
++    wine_dbg_log( dbcl, __wine_dbch___default, "ffmpeg", "%s", buffer );
+ }
+ 
+ static const char *debugstr_version( UINT version )
+@@ -144,7 +144,9 @@ static NTSTATUS process_attach( void *arg )
+     return STATUS_SUCCESS;
+ }
+ 
+-const unixlib_entry_t __wine_unix_call_funcs[] =
++typedef NTSTATUS (*pw_entry_t)( void *args );
++
++static const pw_entry_t pw_funcs[] =
+ {
+ #define X( name ) [unix_##name] = name
+     X( process_attach ),
+@@ -159,9 +161,15 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
+     X( demuxer_stream_type ),
+ };
+ 
+-C_ASSERT(ARRAY_SIZE(__wine_unix_call_funcs) == unix_funcs_count);
++C_ASSERT(ARRAY_SIZE(pw_funcs) == unix_funcs_count);
++
++NTSTATUS pw_dmo_call( unsigned int code, void *params )
++{
++    if (code >= unix_funcs_count) return STATUS_INVALID_PARAMETER;
++    return pw_funcs[code]( params );
++}
+ 
+-#ifdef _WIN64
++#if 0 /* no WoW64 thunks in a Windows DLL */
+ 
+ typedef ULONG PTR32;
+ 
+diff --git a/dlls/winedmo/unixlib.h b/dlls/winedmo/unixlib.h
+index 7b0dda3..5882087 100644
+--- a/dlls/winedmo/unixlib.h
++++ b/dlls/winedmo/unixlib.h
+@@ -168,6 +168,15 @@ enum unix_funcs
+     unix_funcs_count,
+ };
+ 
+-#define UNIX_CALL( func, params ) (__wine_unixlib_handle ? WINE_UNIX_CALL( unix_##func, params ) : STATUS_PROCEDURE_NOT_FOUND)
++/* prospero-win: the console's Wine has no winedmo.so. The FFmpeg code runs in
++ * this DLL instead, called directly (pw_dmo_call in unixlib.c). */
++NTSTATUS pw_dmo_call( unsigned int code, void *params );
++#define UNIX_CALL( func, params ) pw_dmo_call( unix_##func, params )
++#undef WINE_UNIX_CALL
++#define WINE_UNIX_CALL( code, params ) pw_dmo_call( code, params )
++
++/* the stream callbacks, called directly instead of through user callbacks */
++NTSTATUS pw_stream_seek( UINT64 context, UINT64 *offset );
++NTSTATUS pw_stream_read( UINT64 context, ULONG *size );
+ 
+ #endif /* __WINE_WINEDMO_UNIXLIB_H */
+diff --git a/dlls/winedmo/unix_demuxer.c b/dlls/winedmo/unix_demuxer.c
+index fdc4fa4..739c316 100644
+--- a/dlls/winedmo/unix_demuxer.c
++++ b/dlls/winedmo/unix_demuxer.c
+@@ -17,10 +17,10 @@
+  */
+ 
+ #if 0
+-#pragma makedep unix
++/* prospero-win: built into the Windows DLL */
+ #endif
+ 
+-#include "config.h"
++/* config.h: not in a Windows build */
+ #include "unix_private.h"
+ 
+ #include "wine/debug.h"
+diff --git a/dlls/winedmo/unix_media_type.c b/dlls/winedmo/unix_media_type.c
+index fe3060e..d2978f4 100644
+--- a/dlls/winedmo/unix_media_type.c
++++ b/dlls/winedmo/unix_media_type.c
+@@ -17,10 +17,10 @@
+  */
+ 
+ #if 0
+-#pragma makedep unix
++/* prospero-win: built into the Windows DLL */
+ #endif
+ 
+-#include "config.h"
++/* config.h: not in a Windows build */
+ 
+ #include "initguid.h"
+ #include "unix_private.h"
+diff --git a/dlls/winedmo/unix_private.h b/dlls/winedmo/unix_private.h
+index 8192926..9b37a16 100644
+--- a/dlls/winedmo/unix_private.h
++++ b/dlls/winedmo/unix_private.h
+@@ -16,9 +16,7 @@
+  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+  */
+ 
+-#ifndef __WINE_CONFIG_H
+-# error You must include config.h to use this header
+-#endif
++
+ 
+ #include <stdint.h>
+ 
