@@ -46,7 +46,7 @@ jobs:
       - name: One-file build
         run: >-
           python -m PyInstaller --onefile --windowed --name prospero-win-sender
-          --paths tools --exclude-module yaml tools/pw_gui.py
+          --paths tools --exclude-module yaml --add-data "tools/presets;presets" tools/pw_gui.py
       - name: The command line runs from the same modules
         run: python tools/pw_quick.py --help
       - uses: actions/upload-artifact@v4

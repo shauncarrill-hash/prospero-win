@@ -430,3 +430,16 @@ def test_update_settings_only() -> None:
         assert all(path.endswith("mecha.profile") for path in remote.writes), remote.writes
         profile = (console / "data/prospero-win/profiles/mecha.profile").read_text()
         assert "arguments = --rendering-method mobile" in profile, profile
+
+
+def test_preset_goes_to_the_console() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        make_zip(root / "Mecha.zip", {"Mecha/mecha.exe": pe(64, ("kernel32.dll",), padding=200_000)})
+        make_base(root)
+        console, remote = make_console(root)
+        source, base = pw_quick.Source(root / "Mecha.zip"), pw_quick.Source(root / "base.zip")
+        game, _ = pw_quick.suggest(source)
+        game.preset = "mouse"
+        pw_quick.Sender(remote, game, source, base, state_dir=root / "state").send()
+        assert "mouse = left_stick" in (console / "data/prospero-win/input/mouse.input").read_text()

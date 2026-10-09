@@ -76,6 +76,7 @@ NOT_THE_GAME = re.compile(
     r"launcher|register|activation|helper|server|dedicated|benchmark|editor|tool|7z|unrar|python|java")
 D3D = re.compile(r"^(d3d8|d3d9|d3d10(_1)?(core)?|d3d11|dxgi)\.dll$")
 SCAN_DLLS, SCAN_LIMIT = 400, 96 << 20
+PRESETS = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "presets"
 STATE_DIR = Path(os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_STATE_HOME")
                  or Path.home() / ".local" / "state") / "prospero-win" / "quick"
 
@@ -769,7 +770,19 @@ class Sender:
         if stored != item.size:
             raise QuickError(f"{target}: the console stored {stored} bytes, not {item.size}")
 
+    def put_preset(self) -> None:
+        """The game's controller preset, from tools/presets, when the console lacks it."""
+        if not self.game.preset:
+            return
+        bundled = PRESETS / f"{self.game.preset}.input"
+        target = f"{self.root}/input/{self.game.preset}.input"
+        if bundled.is_file() and self.remote.size(target) is None:
+            self.remote.makedirs(f"{self.root}/input")
+            self.remote.write(target, bundled.read_bytes())
+            self.say(f"added the {self.game.preset} controller preset to the console")
+
     def put_profile(self) -> None:
+        self.put_preset()
         profiles = f"{self.root}/profiles"
         name = f"{self.game.slug}.profile"
         self.remote.makedirs(profiles)
