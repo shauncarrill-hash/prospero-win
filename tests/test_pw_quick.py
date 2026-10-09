@@ -9,6 +9,7 @@ DLLs a real game would use."""
 from __future__ import annotations
 
 import os
+import shutil
 import struct
 import sys
 import tarfile
@@ -426,6 +427,18 @@ def test_slow_console_reconnects() -> None:
         assert (console / "data/prospero-win/prefixes/space-cadet/drive_c/Games/space-cadet/data/table.dat"
                 ).stat().st_size == 5_000_000
         assert sender.progress.done_bytes == sender.progress.total_bytes
+
+
+def test_deleted_game_is_sent_again_in_full() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        make_game(root), make_base(root)
+        console, remote = make_console(root)
+        send(root, remote)
+        shutil.rmtree(console / "data/prospero-win/prefixes/space-cadet")
+        sender = send(root, remote)
+        assert sender.progress.skipped == 0
+        assert (console / "data/prospero-win/prefixes/space-cadet/drive_c/Games/space-cadet/PINBALL.EXE").is_file()
 
 
 def main() -> int:

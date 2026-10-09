@@ -681,7 +681,11 @@ class Sender:
         way carries on; a finished one, or a copy from elsewhere, is only
         replaced with overwrite, since the console's copy holds the saves."""
         state, complete = self.load_state()
-        if not overwrite and self.remote.exists(self.remote_prefix):
+        on_console = self.remote.exists(self.remote_prefix)
+        if not on_console:
+            # Deleted from the console since: what this PC sent is gone too.
+            state, complete = None, False
+        if not overwrite and on_console:
             if state is None:
                 raise NeedsOverwrite(f"the console already has {self.game.slug}, sent from somewhere else. "
                                      "Replacing it loses its saves and settings there.")
