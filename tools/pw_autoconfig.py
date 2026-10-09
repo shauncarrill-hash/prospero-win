@@ -162,9 +162,19 @@ def godot(plan: Plan, source, files: Files, exe: str) -> None:
             renderer = "gles"
     csharp = files.has("GodotSharp.dll") or files.dir(r"^data_.*_windows_")
     plan.engine = f"Godot {version or '?'}" + (" C#" if csharp else "")
-    if version == "3" or renderer in ("gles", "gl_compatibility"):
+    if version == "3" or renderer == "gles":
         plan.graphics = "opengl"
         plan.ok(f"{plan.engine} with its OpenGL renderer: OpenGL 4.6 works on the console")
+    elif renderer == "gl_compatibility":
+        # The console's OpenGL driver crashed compiling Godot 4.7's
+        # Compatibility scene shaders (2026-10-09, a 3D game's menu), while
+        # Vulkan runs Godot's other renderers well: Mobile is the closest.
+        plan.graphics = "auto"
+        plan.arguments.append("--rendering-method mobile --rendering-driver vulkan")
+        plan.ok(f"{plan.engine}: its Compatibility (OpenGL) renderer crashes the console's OpenGL "
+                "driver in 3D scenes, so it runs on Vulkan with the Mobile renderer")
+        plan.warn("lighting may look a little different from the editor; for OpenGL instead, set "
+                  "Graphics to OpenGL and clear the arguments")
     else:
         if driver == "d3d12":
             plan.arguments.append("--rendering-driver vulkan")

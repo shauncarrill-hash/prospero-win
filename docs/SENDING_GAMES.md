@@ -108,7 +108,7 @@ not fully work, ✗ will not run. Its rules come from ProbeTris v6.1 on a PS5:
 | --- | --- |
 | Unity | DXVK, `-force-d3d11` |
 | Unreal Engine | starts the `*-Shipping.exe` (the launcher stub can't start it), DXVK, `-dx11` |
-| Godot | reads the pack: OpenGL for the Compatibility renderer and Godot 3; `--rendering-driver vulkan` when the project asks for Direct3D 12 |
+| Godot | reads the pack: Vulkan with the Mobile renderer for Compatibility projects (the console's OpenGL driver crashes on their 3D shaders), OpenGL for Godot 3; `--rendering-driver vulkan` when the project asks for Direct3D 12 |
 | Ren'Py, LÖVE, Java | OpenGL; Ren'Py's inner `lib/py*-windows-x86_64` program |
 | NW.js, Electron, CEF | single-process arguments; warns, since the console refuses child processes |
 | Direct3D 12 only, .NET Framework, XNA, anti-cheat | marked as not running |

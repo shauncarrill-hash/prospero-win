@@ -56,12 +56,12 @@ def pck(project: bytes, version: int = 2) -> bytes:
     return b"GDPC" + struct.pack("<IIII", version, 4, 3, 0) + b"\0" * 64 + project
 
 
-def test_godot_compatibility_renderer_uses_opengl() -> None:
+def test_godot_compatibility_renderer_moves_to_vulkan() -> None:
     game = suggest({"Horror/Horror.exe": pe(64, ("kernel32.dll", "dxgi.dll"), padding=100_000),
                     "Horror/Horror.pck": pck(b"rendering/renderer/rendering_method\0\0\x04\0\0\0"
                                              b"\x10\0\0\0gl_compatibility")})
     assert game.engine == "Godot 2" or game.engine.startswith("Godot"), game.engine
-    assert game.graphics == "opengl", game.graphics
+    assert game.graphics == "auto" and "--rendering-method mobile" in game.arguments, game
 
 
 def test_godot_d3d12_driver_goes_to_vulkan() -> None:
