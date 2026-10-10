@@ -112,7 +112,9 @@ STUBS = PRESETS.parent / "stubs"
 D3D12_DIR = PRESETS.parent / "d3d12"
 # The app's 32-bit translator front end (wine/wowprospero/cpu.c, built
 # against v0.1.1's interface), with the segment register instructions the
-# translator lacks done here (Red Alert's push fs). Used over the app's copy.
+# translator and its host fallback lack done here (legacy_ops.h: segment
+# registers, BCD, ENTER, far transfers, INT3/privileged instructions as
+# Windows raises them). Used over the app's copy.
 BUNDLED_CPU_DLL = PRESETS.parent / "cpu" / "wowprospero.dll"
 STUB_ASSEMBLIES = ("Steamworks.NET",)
 STATE_DIR = Path(os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_STATE_HOME")

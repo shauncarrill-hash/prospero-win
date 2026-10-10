@@ -46,6 +46,7 @@
 #include "wine/unixlib.h"
 #include "wine/debug.h"
 #include "wowprospero.h"
+#include "legacy_ops.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(wow);
 
@@ -370,80 +371,6 @@ static void raise_guest_exception( I386_CONTEXT *ctx, DWORD code, UINT address, 
  * status some system call returns after such a replacement there is not one
  * the game survives. Which call it is is not known yet; the backend names
  * the calls that come back replaced (log_reset). */
-/* Segment register instructions the DBT leaves out: push/pop of a segment
- * register and mov to or from one (register forms). Watcom-built games
- * (Red Alert's ra95.exe) save FS and GS in their prologues. Under WoW64 every
- * segment is flat or the TEB's, so the selector values in the context are
- * all there is to them. Returns the instruction's length, 0 if it isn't one. */
-static DWORD *segment_slot( I386_CONTEXT *ctx, unsigned reg )
-{
-    switch (reg)
-    {
-    case 0: return &ctx->SegEs;
-    case 1: return &ctx->SegCs;
-    case 2: return &ctx->SegSs;
-    case 3: return &ctx->SegDs;
-    case 4: return &ctx->SegFs;
-    case 5: return &ctx->SegGs;
-    }
-    return NULL;
-}
-
-static DWORD *general_slot( I386_CONTEXT *ctx, unsigned reg )
-{
-    DWORD *regs[8] = { &ctx->Eax, &ctx->Ecx, &ctx->Edx, &ctx->Ebx, &ctx->Esp, &ctx->Ebp, &ctx->Esi, &ctx->Edi };
-    return regs[reg & 7];
-}
-
-static unsigned emulate_segment( I386_CONTEXT *ctx )
-{
-    const BYTE *code = ULongToPtr( ctx->Eip );
-    unsigned i = 0, size = 4, seg = 8, push = 0, pop = 0;
-    DWORD *slot;
-
-    if (code[i] == 0x66) { size = 2; i++; }
-    switch (code[i])
-    {
-    case 0x06: case 0x0e: case 0x16: case 0x1e: seg = code[i] >> 3; push = 1; i += 1; break;
-    case 0x07: case 0x17: case 0x1f: seg = code[i] >> 3; pop = 1; i += 1; break;
-    case 0x0f:
-        if (code[i + 1] == 0xa0 || code[i + 1] == 0xa8) push = 1;
-        else if (code[i + 1] == 0xa1 || code[i + 1] == 0xa9) pop = 1;
-        else return 0;
-        seg = code[i + 1] < 0xa8 ? 4 : 5;
-        i += 2;
-        break;
-    case 0x8c: case 0x8e:
-    {
-        BYTE modrm = code[i + 1];
-        DWORD *reg;
-        if ((modrm >> 6) != 3 || !(slot = segment_slot( ctx, (modrm >> 3) & 7 ))) return 0;
-        reg = general_slot( ctx, modrm );
-        if (code[i] == 0x8c)
-            *reg = size == 2 ? (*reg & 0xffff0000) | (*slot & 0xffff) : (*slot & 0xffff);
-        else if (((modrm >> 3) & 7) != 1)        /* never CS */
-            *slot = *reg & 0xffff;
-        return i + 2;
-    }
-    default:
-        return 0;
-    }
-    if (ctx->Esp < 0x10000 + size || !(slot = segment_slot( ctx, seg ))) return 0;
-    if (push)
-    {
-        ctx->Esp -= size;
-        if (size == 2) *(WORD *)ULongToPtr( ctx->Esp ) = *slot;
-        else *(DWORD *)ULongToPtr( ctx->Esp ) = *slot & 0xffff;
-    }
-    else if (pop)
-    {
-        DWORD value = size == 2 ? *(WORD *)ULongToPtr( ctx->Esp ) : *(DWORD *)ULongToPtr( ctx->Esp );
-        if (seg != 1) *slot = value & 0xffff;
-        ctx->Esp += size;
-    }
-    return i;
-}
-
 static int service_return( WOW64_CPURESERVED *cpu, I386_CONTEXT *ctx, NTSTATUS status, int unix_call )
 {
     if (!(cpu->Flags & WOW64_CPURESERVED_FLAG_RESET_STATE))
@@ -592,10 +519,13 @@ void WINAPI BTCpuSimulate(void)
         case PW_WOW_UNSUPPORTED:
         {
             const BYTE *code = ULongToPtr( ctx->Eip );
-            unsigned length = emulate_segment( ctx );
-            if (length)
+            DWORD raise = 0;
+            UINT where = 0;
+            /* What neither the translator nor its host fallback does, mostly
+             * old compilers' and copy protections' instructions. */
+            if (legacy_op( ctx, &raise, &where ))
             {
-                ctx->Eip += length;
+                if (raise) raise_guest_exception( ctx, raise, where, 0 );
                 break;
             }
             ERR( "untranslatable instruction at eip %#lx: %02x %02x %02x %02x %02x %02x %02x %02x\n",
