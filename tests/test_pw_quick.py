@@ -723,6 +723,23 @@ def test_the_exe_that_draws_beats_its_launcher(tmp_path):
     assert exes[0].key == "Game.exe", [(exe.key, exe.score) for exe in exes]
 
 
+def test_launcher_game_runs_through_pwexec(tmp_path):
+    zip_path = tmp_path / "ra2.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("RA2.exe", pe(32, ("kernel32.dll", "user32.dll", "gdi32.dll"), padding=2_000_000))
+        archive.writestr("Game.exe", pe(32, ("kernel32.dll", "ddraw.dll"), padding=1_000_000))
+    game, _ = pw_quick.suggest(pw_quick.Source(zip_path))
+    assert game.exe == "Game.exe"
+    assert game.launcher == "RA2.exe", game.launcher
+    profile = game.profile()
+    assert "pwexec32.exe" in profile
+    assert '"RA2.exe"' in profile       # launcher handed to pwexec as its first argument
+    sender = pw_quick.Sender.__new__(pw_quick.Sender)
+    sender.game, sender.mono, sender.source = game, None, pw_quick.Source(zip_path)
+    found = sender.stand_ins()
+    assert f"{game.folder}/pwexec32.exe" in found, sorted(found)
+
+
 import pytest  # noqa: E402
 
 

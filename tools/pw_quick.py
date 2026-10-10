@@ -110,6 +110,10 @@ PRESETS = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "pre
 # whose SteamAPI.Init answers false without Steam.
 STUBS = PRESETS.parent / "stubs"
 D3D12_DIR = PRESETS.parent / "d3d12"
+# pwexec, the launcher loader (tools/pwexec): runs a launcher and the program
+# it starts in one process, since the console can't start a second one.
+PWEXEC_DIR = PRESETS.parent / "pwexec"
+PWEXEC_NAMES = {32: "pwexec32.exe", 64: "pwexec64.exe"}
 # The app's 32-bit translator front end (wine/wowprospero/cpu.c, built
 # against v0.1.1's interface), with the segment register instructions the
 # translator and its host fallback lack done here (legacy_ops.h: segment
@@ -443,6 +447,11 @@ class Game:
     winedebug: str = ""
     engine: str = ""
     checks: list = field(default_factory=list)     # pw_autoconfig.Check
+    # A launcher (RA2.exe before Game.exe) the game starts through: the
+    # console can't start a second program, so pwexec runs the launcher and
+    # the program it starts, one after the other, in the one process (see
+    # tools/pwexec). The path is inside the game's folder, posix.
+    launcher: str = ""
 
     @property
     def uses_dxvk(self) -> bool:
@@ -487,12 +496,25 @@ class Game:
         if self.engine:
             lines.append(f"; engine: {self.engine}")
         lines += [f"; {check}" for check in self.checks]
+        if self.launcher:
+            # Start pwexec, beside the launcher, with the launcher as its
+            # first argument; it runs the launcher and the program the
+            # launcher starts in the one process.
+            pwexec = f"{posixpath.dirname(f'{self.folder}/{self.launcher}')}/{PWEXEC_NAMES[self.bits]}"
+            start = self.windows(pwexec)
+            work = self.windows(posixpath.dirname(f"{self.folder}/{self.launcher}"))
+            launcher_arg = PureWindowsPath(self.windows(f"{self.folder}/{self.launcher}")).name
+            arguments = f'"{launcher_arg}"' + (f" {self.arguments}" if self.arguments else "")
+        else:
+            start = self.windows(exe)
+            work = self.windows(posixpath.dirname(exe))
+            arguments = self.arguments
         lines += [
                  "[application]", f"id = {self.slug}", f"name = {self.name}",
-                 f"executable = {self.windows(exe)}",
-                 f"working_directory = {self.windows(posixpath.dirname(exe))}"]
-        if self.arguments:
-            lines.append(f"arguments = {self.arguments}")
+                 f"executable = {start}",
+                 f"working_directory = {work}"]
+        if arguments:
+            lines.append(f"arguments = {arguments}")
         if self.graphics == "dxvk":
             lines.append(f"dll_overrides = {','.join(DXVK_DLLS)}=n")
         elif self.graphics == "d3d12":
@@ -521,12 +543,40 @@ def suggest(source: Source) -> tuple[Game, list[Executable]]:
     return configured(source, exe, plan, name), exes
 
 
+def find_launcher(source: Source, exe: Executable, exes: list[Executable]) -> str:
+    """A launcher the game is started through (RA2.exe before Game.exe), or "".
+    For an engine-less game whose own program draws, a second program in the
+    same folder that draws nothing is the launcher: the console can't start it
+    the normal way, so pwexec runs it and the game one after the other. The
+    sender picks the drawing program as the game, so the launcher is the
+    other, plausible, same-architecture, windowed program beside it that
+    imports no graphics library and isn't a tool (setup, patcher, crash
+    reporter, ...)."""
+    if not (graphics_of(exe.info.imports) or "vulkan-1.dll" in exe.info.imports):
+        return ""                               # the game itself draws nothing: no launcher pattern
+    folder = posixpath.dirname(exe.key)
+    best = None
+    for other in exes:
+        if other.key == exe.key or posixpath.dirname(other.key) != folder:
+            continue
+        if other.info.bits != exe.info.bits or not other.info.gui:
+            continue
+        if graphics_of(other.info.imports) or "d3d12.dll" in other.info.imports or "vulkan-1.dll" in other.info.imports:
+            continue                            # itself a renderer: not a launcher
+        if NOT_THE_GAME.search(PurePosixPath(other.key).stem.lower()):
+            continue                            # setup, patcher, crash reporter, ...
+        if best is None or other.score > best.score:
+            best = other
+    return best.key if best else ""
+
+
 def configured(source: Source, exe: Executable, plan: pw_autoconfig.Plan, name: str) -> Game:
     environment = suggest_environment(source)
     environment.update(plan.environment)
+    launcher = "" if (plan.engine or plan.exe) else find_launcher(source, exe, find_executables(source, name))
     return Game(name=name, slug=slugify(name), exe=exe.key, bits=exe.info.bits,
                 graphics=plan.graphics or guess_graphics(source, exe), arguments=" ".join(plan.arguments),
-                environment=environment, engine=plan.engine, checks=plan.checks)
+                environment=environment, engine=plan.engine, checks=plan.checks, launcher=launcher)
 
 
 # .NET's runtime (Godot's C# builds, MonoGame, ...) starts by reserving
@@ -954,6 +1004,13 @@ class Sender:
                 if not (D3D12_DIR / name).is_file():
                     raise QuickError(f"{name} isn't in {D3D12_DIR}: this sender build lacks Direct3D 12")
                 found[f"{here}/{name}"] = (D3D12_DIR / name).read_bytes()
+        if self.game.launcher:
+            name = PWEXEC_NAMES[self.game.bits]
+            pwexec = PWEXEC_DIR / name
+            if not pwexec.is_file():
+                raise QuickError(f"{name} isn't in {PWEXEC_DIR}: this sender build lacks the launcher loader")
+            here = posixpath.dirname(f"{self.game.folder}/{self.game.launcher}")
+            found[f"{here}/{name}"] = pwexec.read_bytes()
         if self.mono is None:
             return found
         try:
