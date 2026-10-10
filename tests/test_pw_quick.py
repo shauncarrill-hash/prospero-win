@@ -441,6 +441,37 @@ def test_deleted_game_is_sent_again_in_full() -> None:
         assert (console / "data/prospero-win/prefixes/space-cadet/drive_c/Games/space-cadet/PINBALL.EXE").is_file()
 
 
+def test_payloads_go_to_the_elf_loader_in_order() -> None:
+    import socket
+    received = []
+    server = socket.create_server(("127.0.0.1", 0))
+    port = server.getsockname()[1]
+
+    def serve():
+        for _ in range(2):
+            connection, _ = server.accept()
+            with connection:
+                data = b""
+                while chunk := connection.recv(65536):
+                    data += chunk
+                received.append(data)
+    thread = threading.Thread(target=serve)
+    thread.start()
+    with tempfile.TemporaryDirectory() as tmp:
+        first, second = Path(tmp) / "etaHEN.bin", Path(tmp) / "ftpsrv.elf"
+        first.write_bytes(b"\x7fELF" + os.urandom(300_000))
+        second.write_bytes(b"\x7fELF" + b"x" * 100)
+        assert pw_quick.send_payloads("127.0.0.1", port, [first, second], say=lambda text: None, gap=0.01) == 2
+        thread.join(5)
+        assert received == [first.read_bytes(), second.read_bytes()]
+    server.close()
+    try:
+        pw_quick.send_payload("127.0.0.1", port, __file__)
+        raise AssertionError("a closed port took a payload")
+    except pw_quick.QuickError:
+        pass
+
+
 def main() -> int:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

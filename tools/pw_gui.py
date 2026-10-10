@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pw_quick  # noqa: E402
 from pw_quick import QuickError  # noqa: E402
 
-VERSION = "4.7"
+VERSION = "4.8"
 TITLE = f"prospero-win sender v{VERSION}: send a game to your PS5"
 SETTINGS = pw_quick.STATE_DIR / "settings.json"
 BASE_NAME = "prospero-base-prefix.zip"
@@ -105,6 +105,10 @@ class App:
         self.winedebug = tk.StringVar()
         self.checks = tk.StringVar()
         self.status = tk.StringVar(value="Pick a game to start.")
+        self.elf_port = tk.StringVar(value=str(settings.get("elf_port", pw_quick.ELF_PORT)))
+        self.payloads: list[dict] = [entry for entry in settings.get("payloads", [])
+                                     if isinstance(entry, dict) and entry.get("path")]
+        self.injecting = False
 
         outer = ttk.Frame(root, padding=16)
         outer.grid(sticky="nsew")
@@ -125,6 +129,33 @@ class App:
         ttk.Entry(ps5, textvariable=self.port, width=7).grid(row=0, column=3, sticky="w", padx=8)
         self.check_button = ttk.Button(ps5, text="Check", command=self.check_console)
         self.check_button.grid(row=0, column=4)
+
+        loader = ttk.LabelFrame(outer, text="Payloads", padding=10)
+        loader.grid(sticky="ew", pady=(0, 10))
+        loader.columnconfigure(0, weight=1)
+        self.payload_list = tk.Listbox(loader, height=4, selectmode="multiple", exportselection=False,
+                                       activestyle="none")
+        self.payload_list.grid(row=0, column=0, rowspan=3, sticky="nsew")
+        self.payload_list.bind("<<ListboxSelect>>", lambda event: self.remember())
+        side = ttk.Frame(loader)
+        side.grid(row=0, column=1, rowspan=3, sticky="n", padx=(8, 0))
+        port_row = ttk.Frame(side)
+        port_row.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        ttk.Label(port_row, text="ELF port").grid(row=0, column=0, sticky="w")
+        ttk.Entry(port_row, textvariable=self.elf_port, width=7).grid(row=0, column=1, padx=(6, 0))
+        buttons_row = ttk.Frame(side)
+        buttons_row.grid(row=1, column=0, sticky="ew")
+        ttk.Button(buttons_row, text="Add…", command=self.add_payloads).grid(row=0, column=0)
+        ttk.Button(buttons_row, text="Remove", command=self.remove_payloads).grid(row=0, column=1, padx=(4, 0))
+        ttk.Button(buttons_row, text="↑", width=3, command=lambda: self.move_payload(-1)).grid(row=0, column=2, padx=(4, 0))
+        ttk.Button(buttons_row, text="↓", width=3, command=lambda: self.move_payload(1)).grid(row=0, column=3, padx=(4, 0))
+        self.inject_button = ttk.Button(side, text="Inject selected", command=self.inject)
+        self.inject_button.grid(row=2, column=0, sticky="ew", pady=(6, 0))
+        ttk.Label(loader, style="Hint.TLabel", wraplength=580, justify="left",
+                  text="Click payloads to select them; they're sent top to bottom, 2 seconds apart, "
+                       "to the PS5's ELF loader at the IP address above.").grid(
+            row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        self.show_payloads()
 
         game = ttk.LabelFrame(outer, text="Game", padding=10)
         game.grid(sticky="ew", pady=(0, 10))
@@ -215,8 +246,89 @@ class App:
         return host, port
 
     def remember(self) -> None:
+        chosen = set(self.payload_list.curselection())
+        for index, entry in enumerate(self.payloads):
+            entry["on"] = index in chosen
         save_settings({"host": self.host.get().strip(), "port": self.port.get().strip(),
-                       "base": self.base.get().strip(), "desktop": self.desktop.get().strip()})
+                       "base": self.base.get().strip(), "desktop": self.desktop.get().strip(),
+                       "elf_port": self.elf_port.get().strip(), "payloads": self.payloads})
+
+    # --- payloads ----------------------------------------------------------------
+    def show_payloads(self) -> None:
+        self.payload_list.delete(0, "end")
+        for index, entry in enumerate(self.payloads):
+            path = Path(entry["path"])
+            self.payload_list.insert("end", path.name + ("" if path.is_file() else "  (file missing)"))
+            if entry.get("on", True):
+                self.payload_list.selection_set(index)
+
+    def add_payloads(self) -> None:
+        paths = filedialog.askopenfilenames(parent=self.root, title="Choose payloads to send to the PS5",
+                                            filetypes=(("Payloads", "*.elf *.bin"), ("All files", "*.*")))
+        known = {entry["path"] for entry in self.payloads}
+        self.remember()
+        self.payloads += [{"path": path, "on": True} for path in paths if path not in known]
+        self.show_payloads()
+        self.remember()
+
+    def remove_payloads(self) -> None:
+        chosen = set(self.payload_list.curselection())
+        if not chosen:
+            self.status.set("Click the payloads to remove first.")
+            return
+        self.payloads = [entry for index, entry in enumerate(self.payloads) if index not in chosen]
+        self.show_payloads()
+        self.remember()
+
+    def move_payload(self, step: int) -> None:
+        chosen = list(self.payload_list.curselection())
+        active = self.payload_list.index("active")
+        index = chosen[0] if len(chosen) == 1 else active
+        target = index + step
+        if not 0 <= index < len(self.payloads) or not 0 <= target < len(self.payloads):
+            return
+        self.remember()
+        self.payloads[index], self.payloads[target] = self.payloads[target], self.payloads[index]
+        self.show_payloads()
+        self.payload_list.activate(target)
+        self.remember()
+
+    def inject(self) -> None:
+        if self.injecting:
+            return
+        host = self.host.get().strip()
+        if not host:
+            messagebox.showerror("prospero-win", "Type the PS5's IP address first.", parent=self.root)
+            return
+        try:
+            port = int(self.elf_port.get().strip())
+            if not 0 < port < 65536:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("prospero-win", f"{self.elf_port.get()!r} is not a port number "
+                                 f"(the ELF loader usually uses {pw_quick.ELF_PORT}).", parent=self.root)
+            return
+        chosen = [self.payloads[index]["path"] for index in self.payload_list.curselection()]
+        if not chosen:
+            messagebox.showerror("prospero-win", "Add payloads with Add…, then click the ones to send.",
+                                 parent=self.root)
+            return
+        missing = [path for path in chosen if not Path(path).is_file()]
+        if missing:
+            messagebox.showerror("prospero-win", "These files are gone:\n" + "\n".join(missing), parent=self.root)
+            return
+        self.remember()
+        self.injecting = True
+        self.inject_button.configure(state="disabled")
+
+        def body() -> None:
+            try:
+                count = pw_quick.send_payloads(host, port, chosen,
+                                               say=lambda text: self.events.put(("status", text)))
+                self.events.put(("injected", f"Sent {count} payload{'s' if count != 1 else ''} to {host}:{port}."))
+            except (QuickError, OSError) as error:
+                self.events.put(("injected", f"error: {error}"))
+        threading.Thread(target=body, daemon=True).start()
 
     def run(self, work, done=None) -> None:
         """work(report) in the background; done(result) back on the window."""
@@ -255,6 +367,14 @@ class App:
                         self.status.set(message)
                 elif kind == "status":
                     self.status.set(value)
+                elif kind == "injected":
+                    self.injecting = False
+                    self.inject_button.configure(state="normal")
+                    if value.startswith("error: "):
+                        self.status.set(value[7:])
+                        messagebox.showerror("prospero-win", value[7:], parent=self.root)
+                    else:
+                        self.status.set(value)
                 elif kind == "done":
                     callback, result = value
                     self.busy(False)

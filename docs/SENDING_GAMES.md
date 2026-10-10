@@ -19,6 +19,14 @@ that need registry entries an installer writes, still go through a recipe
   prefix](#making-the-base-prefix)).
 - The game, as a folder or a zip.
 
+## Sending payloads
+
+The **Payloads** box sends `.elf` and `.bin` payloads (an FTP server,
+etaHEN, ...) to the PS5's ELF loader, port 9021 by default. **Add…** them
+once; the sender remembers the list and which ones are selected. Click to
+select, ↑ and ↓ to reorder, and **Inject selected** sends them top to bottom,
+2 seconds apart, to the IP address in the PS5 box.
+
 ## Sending a game
 
 1. Type the PS5's IP address and its FTP port (2121 for ps5-payload-dev's

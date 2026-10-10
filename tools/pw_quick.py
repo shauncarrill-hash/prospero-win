@@ -38,6 +38,7 @@ import json
 import os
 import posixpath
 import re
+import socket
 import struct
 import sys
 import tarfile
@@ -900,6 +901,40 @@ class Remote(FtpRemote):
             return True
         except ftplib.all_errors:
             return False
+
+
+# The ELF loader (ps5-payload-dev elfldr) runs what is sent to this port.
+ELF_PORT = 9021
+PAYLOAD_GAP = 2.0
+
+
+def send_payload(host: str, port: int, path: Path | str) -> int:
+    """Sends one payload (.elf or .bin) to the console's ELF loader, which
+    starts it once the connection closes. Returns its size."""
+    data = Path(path).read_bytes()
+    try:
+        with socket.create_connection((host, port), timeout=30) as connection:
+            connection.sendall(data)
+            connection.shutdown(socket.SHUT_WR)
+    except OSError as error:
+        raise QuickError(f"the ELF loader at {host}:{port} did not take {Path(path).name} ({error}): "
+                         "check the port and that the loader is running") from error
+    return len(data)
+
+
+def send_payloads(host: str, port: int, paths: Iterable[Path | str], say: Callable[[str], None] = print,
+                  gap: float = PAYLOAD_GAP, cancel: threading.Event | None = None) -> int:
+    """Sends payloads one after another, gap seconds apart."""
+    cancel = cancel or threading.Event()
+    sent = 0
+    for index, path in enumerate(paths):
+        if index and cancel.wait(gap):
+            raise Cancelled()
+        say(f"sending {Path(path).name} to {host}:{port}")
+        size = send_payload(host, port, path)
+        sent += 1
+        say(f"sent {Path(path).name} ({size:,} bytes)")
+    return sent
 
 
 def connect(host: str, port: int) -> Remote:
