@@ -110,6 +110,10 @@ PRESETS = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "pre
 # whose SteamAPI.Init answers false without Steam.
 STUBS = PRESETS.parent / "stubs"
 D3D12_DIR = PRESETS.parent / "d3d12"
+# The app's 32-bit translator front end (wine/wowprospero/cpu.c, built
+# against v0.1.1's interface), with the segment register instructions the
+# translator lacks done here (Red Alert's push fs). Used over the app's copy.
+BUNDLED_CPU_DLL = PRESETS.parent / "cpu" / "wowprospero.dll"
 STUB_ASSEMBLIES = ("Steamworks.NET",)
 STATE_DIR = Path(os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_STATE_HOME")
                  or Path.home() / ".local" / "state") / "prospero-win" / "quick"
@@ -1005,6 +1009,8 @@ class Sender:
 
     def send_files(self, state: dict[str, int] | None) -> None:
         self.put_mono()
+        if self.cpu_dll is None and BUNDLED_CPU_DLL.is_file():
+            self.cpu_dll = BUNDLED_CPU_DLL.read_bytes()
         if self.cpu_dll is None and self.remote.size(f"{self.remote_prefix}/{CPU_DLL}") is None:
             self.cpu_dll = fetch_app_cpu_dll(self.remote)
         items, dirs = self.items()
@@ -1080,8 +1086,10 @@ class Sender:
                 changed = set_values(changed, MONO_KEY, {"RuntimePath": runtime})
             if changed != registry:
                 self.retrying(lambda path=path, changed=changed: self.remote.write(path, changed))
-        for item in (Item(key, len(data), data=data)
-                     for key, data in sorted({**self.stand_ins(), **self.dxvk}.items())):
+        extra = {**self.stand_ins(), **self.dxvk}
+        if self.cpu_dll is None and BUNDLED_CPU_DLL.is_file():
+            extra[CPU_DLL] = BUNDLED_CPU_DLL.read_bytes()
+        for item in (Item(key, len(data), data=data) for key, data in sorted(extra.items())):
             if self.remote.size(f"{self.remote_prefix}/{item.key}") != item.size:
                 self.say(f"sending {item.key}")
                 self.put(item)

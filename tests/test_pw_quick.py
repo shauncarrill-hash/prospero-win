@@ -721,3 +721,12 @@ def test_the_exe_that_draws_beats_its_launcher(tmp_path):
         archive.writestr("Game.exe", pe(32, ("kernel32.dll", "ddraw.dll"), padding=1_000_000))
     exes = pw_quick.find_executables(pw_quick.Source(zip_path), "ra2")
     assert exes[0].key == "Game.exe", [(exe.key, exe.score) for exe in exes]
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def app_translator(monkeypatch):
+    """These tests send the app's own translator, not the bundled one."""
+    monkeypatch.setattr(pw_quick, "BUNDLED_CPU_DLL", pw_quick.Path("/nonexistent/wowprospero.dll"))
