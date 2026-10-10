@@ -43,6 +43,7 @@ import struct
 import sys
 import tarfile
 import threading
+import time
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -65,6 +66,11 @@ GAMES = "drive_c/Games"
 BASE_LINKS = f"dosdevices/{pw_prefix.LINK_TABLE}"
 DXVK_VERSION = "2.6.2"
 FTP_ATTEMPTS = 6
+# FTP connections a send uses at once. Every file costs a few round trips
+# before its bytes move (PASV, the data connection, STOR, SIZE), which for a
+# prefix's thousands of small files is most of the time; ftpsrv serves each
+# connection on its own thread, so they overlap.
+FTP_LANES = 4
 # Wine Mono, Wine's .NET Framework 4 stand-in, for .NET Framework and XNA
 # games: one copy on the console, which each such game's prefix points at
 # (HKCU\Software\Wine\Mono RuntimePath; Z: is the console's /). The
@@ -663,7 +669,7 @@ class Sender:
                  dxvk: dict[str, bytes] | None = None, cpu_dll: bytes | None = None,
                  remote_root: str = REMOTE_ROOT, state_dir: Path = STATE_DIR, host: str = "console",
                  report: Callable[[Progress], None] | None = None, cancel: threading.Event | None = None,
-                 mono: Source | None = None):
+                 mono: Source | None = None, lanes: int = FTP_LANES):
         game.check()
         if game.mono and mono is None:
             raise QuickError(f"{game.name} needs Wine Mono, and {MONO_NAME}.zip isn't next to the sender")
@@ -686,6 +692,9 @@ class Sender:
         self.progress = Progress()
         self.report = report or (lambda progress: None)
         self.cancel = cancel or threading.Event()
+        self.lanes = max(1, lanes)
+        self.lock = threading.RLock()
+        self.spares: list = []    # the connections beside self.remote, opened by each()
 
     def say(self, message: str) -> None:
         self.progress.message = message
@@ -792,6 +801,12 @@ class Sender:
             # The game's files this PC sent at the same size stay; the
             # registry, which holds the settings, goes again.
             state = {key: size for key, size in state.items() if key not in REGISTRY}
+        try:
+            self.send_files(state)
+        finally:
+            self.close_spares()
+
+    def send_files(self, state: dict[str, int] | None) -> None:
         self.put_mono()
         if self.cpu_dll is None and self.remote.size(f"{self.remote_prefix}/{CPU_DLL}") is None:
             self.cpu_dll = fetch_app_cpu_dll(self.remote)
@@ -800,28 +815,40 @@ class Sender:
         self.progress.total_files = len(items)
         self.progress.total_bytes = sum(item.size for item in items)
         self.say(f"making {len(dirs)} folders")
-        for directory in sorted(dirs):
-            self.check_cancel()
-            self.retrying(lambda: self.remote.makedirs(f"{self.remote_prefix}/{directory}"))
+        levels: dict[int, list[str]] = {}
+        for directory in dirs:
+            levels.setdefault(directory.count("/"), []).append(directory)
+        for depth in sorted(levels):
+            # A level's parents are all made before it starts.
+            self.each(sorted(levels[depth]), lambda directory, remote: self.retrying(
+                lambda: remote.makedirs(f"{self.remote_prefix}/{directory}"), remote))
         self.say(f"sending {len(items)} files ({pw_prefix.gib(self.progress.total_bytes)})")
+        todo = []
+        for item in items:
+            # What this PC already sent at this size is there.
+            if state.get(item.key) == item.size and not item.always:
+                self.progress.skipped += 1
+                self.advance(item.size)
+            else:
+                todo.append(item)
         unsaved = 0
-        try:
-            for item in items:
-                self.check_cancel()
-                self.progress.current = item.key
-                # What this PC already sent at this size is there.
-                if state.get(item.key) == item.size and not item.always:
-                    self.progress.skipped += 1
-                    self.advance(item.size)
-                    continue
-                self.retrying(lambda: self.put(item))
+
+        def send_one(item: Item, remote) -> None:
+            nonlocal unsaved
+            self.progress.current = item.key
+            self.retrying(lambda: self.put(item, remote), remote)
+            with self.lock:
                 state[item.key] = item.size
                 unsaved += 1
                 if unsaved >= pw_prefix.SAVE_EVERY_FILES:
-                    self.save_state(state)
+                    self.save_state(dict(state))
                     unsaved = 0
+        try:
+            # The biggest first, so the connections finish together.
+            self.each(sorted(todo, key=lambda item: -item.size), send_one)
         except BaseException:
-            self.save_state(state)
+            with self.lock:
+                self.save_state(dict(state))
             raise
         self.put_profile()
         self.save_state(state, complete=True)
@@ -837,7 +864,10 @@ class Sender:
         if not self.remote.exists(self.remote_prefix):
             raise QuickError(f"{self.game.slug} is not on the console yet: send it first")
         if self.mono is not None:
-            self.put_mono()
+            try:
+                self.put_mono()
+            finally:
+                self.close_spares()
             path = f"{self.remote_prefix}/user.reg"
             user = self.remote.read(path)
             runtime = "Z:" + self.remote_mono.replace("/", "\\")
@@ -857,15 +887,67 @@ class Sender:
             raise Cancelled()
 
     def advance(self, size: int, files: int = 1) -> None:
-        self.progress.done_bytes += size
-        self.progress.done_files += files
+        with self.lock:
+            self.progress.done_bytes += size
+            self.progress.done_files += files
         self.report(self.progress)
 
-    def retrying(self, step: Callable[[], None]) -> None:
+    def each(self, tasks: Iterable, work: Callable[[object, object], None]) -> None:
+        """Runs work(task, remote) for every task, over up to self.lanes FTP
+        connections at once (more connections to the console, beside
+        self.remote, when it has clone)."""
+        tasks = list(tasks)
+        wanted = min(self.lanes, len(tasks)) - 1
+        if wanted > len(self.spares) and hasattr(self.remote, "clone"):
+            while len(self.spares) < wanted:
+                try:
+                    self.spares.append(self.remote.clone())
+                except (OSError, EOFError, ftplib.Error):
+                    self.lanes = len(self.spares) + 1  # the console takes fewer: use what it gave
+                    break
+        remotes = [self.remote, *self.spares[:max(wanted, 0)]]
+        if len(remotes) == 1:
+            for task in tasks:
+                self.check_cancel()
+                work(task, self.remote)
+            return
+        pending, taking, errors = iter(tasks), threading.Lock(), []
+
+        def lane(remote) -> None:
+            while not errors:
+                with taking:
+                    task = next(pending, taking)
+                if task is taking:
+                    return
+                try:
+                    self.check_cancel()
+                    work(task, remote)
+                except BaseException as error:  # noqa: B036 - handed to the caller's thread
+                    errors.append(error)
+                    return
+        threads = [threading.Thread(target=lane, args=(remote,), daemon=True) for remote in remotes]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        if errors:
+            # A real failure over the Cancelled it made the other lanes stop with
+            raise next((error for error in errors if not isinstance(error, Cancelled)), errors[0])
+
+    def close_spares(self) -> None:
+        for remote in self.spares:
+            try:
+                remote.close()
+            except (OSError, EOFError, ftplib.Error):
+                pass
+        self.spares = []
+
+    def retrying(self, step: Callable[[], None], remote=None) -> None:
         """Runs step, and when the console stops answering or drops the
-        connection, connects again and repeats it, waiting longer each time."""
+        connection, connects remote (self.remote by default) again and
+        repeats it, waiting longer each time."""
+        remote = remote or self.remote
         for attempt in range(1, FTP_ATTEMPTS + 1):
-            done_bytes, done_files = self.progress.done_bytes, self.progress.done_files
             try:
                 step()
                 return
@@ -875,13 +957,12 @@ class Sender:
                 if attempt == FTP_ATTEMPTS:
                     raise QuickError(f"the PS5 stopped answering ({error or type(error).__name__}) "
                                      f"{attempt} times: press Send again to carry on") from error
-                self.progress.done_bytes, self.progress.done_files = done_bytes, done_files
                 self.say(f"the PS5 is slow to answer ({error or type(error).__name__}): "
                          f"connecting again (try {attempt + 1} of {FTP_ATTEMPTS})")
                 if self.cancel.wait(min(5 * attempt, 30)):
                     raise Cancelled() from error
                 try:
-                    self.remote.reconnect()
+                    remote.reconnect()
                 except (OSError, EOFError, ftplib.Error):
                     pass  # the next try fails and waits again
 
@@ -895,37 +976,49 @@ class Sender:
         for directory in sorted({posixpath.dirname(key) for key, _ in files} | set(self.mono.dirs)):
             self.check_cancel()
             self.retrying(lambda: self.remote.makedirs(posixpath.join(self.remote_mono, directory)))
-        for index, (key, size) in enumerate(files, start=1):
-            self.check_cancel()
+        done = 0
+
+        def put_one(file: tuple[str, int], remote) -> None:
+            nonlocal done
+            key, size = file
             target = f"{self.remote_mono}/{key}"
-            if self.remote.size(target) == size:
-                continue
-            data = self.mono.read(key)
-            self.retrying(lambda: self.remote.write(target, data))
-            if index % 50 == 0:
-                self.say(f"Wine Mono: {index} of {len(files)} files")
+            if remote.size(target) != size:
+                data = self.mono.read(key)
+                self.retrying(lambda: remote.write(target, data), remote)
+            with self.lock:
+                done += 1
+                if done % 50 == 0:
+                    self.say(f"Wine Mono: {done} of {len(files)} files")
+        self.each(files, put_one)
         self.remote.write(f"{self.remote_mono}/{MONO_MARKER}", MONO_VERSION.encode())
 
-    def put(self, item: Item) -> None:
+    def put(self, item: Item, remote=None) -> None:
+        """Sends one file over remote (self.remote by default). The progress
+        it made is taken back when it fails, for the retry to count again."""
+        remote = remote or self.remote
         target = f"{self.remote_prefix}/{item.key}"
-        if item.data is not None:
-            self.remote.write(target, item.data)
-            self.advance(item.size)
-        else:
-            def tick(count: int) -> None:
+        sent = 0
+
+        def tick(count: int) -> None:
+            nonlocal sent
+            with self.lock:
+                sent += count
                 self.progress.done_bytes += count
-                self.report(self.progress)
-            with item.open() as stream:
-                reader = CountingReader(stream, tick, self.cancel)
-                try:
-                    self.remote.write_stream(target, reader)
-                except Cancelled:
-                    self.progress.done_bytes -= reader.size
-                    raise
-            self.progress.done_files += 1
-        stored = self.remote.size(target)
-        if stored != item.size:
-            raise QuickError(f"{target}: the console stored {stored} bytes, not {item.size}")
+            self.report(self.progress)
+        try:
+            if item.data is not None:
+                remote.write(target, item.data)
+            else:
+                with item.open() as stream:
+                    remote.write_stream(target, CountingReader(stream, tick, self.cancel))
+            stored = remote.size(target)
+            if stored != item.size:
+                raise QuickError(f"{target}: the console stored {stored} bytes, not {item.size}")
+        except BaseException:
+            with self.lock:
+                self.progress.done_bytes -= sent
+            raise
+        self.advance(item.size - sent)
 
     def put_preset(self) -> None:
         """The game's controller preset, from tools/presets, when the console lacks it."""
@@ -1021,6 +1114,13 @@ class Remote(FtpRemote):
             self.ftp.voidcmd("TYPE I")
         except ftplib.all_errors:
             pass
+
+    def clone(self) -> "Remote":
+        """One more connection to the same console, for sending beside this
+        one. It shares the folders known to be made."""
+        other = Remote(self.host, self.port)
+        other.made = self.made
+        return other
 
     def chmod(self, path: str, mode: str) -> bool:
         try:

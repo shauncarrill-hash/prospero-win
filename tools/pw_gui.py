@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pw_quick  # noqa: E402
 from pw_quick import QuickError  # noqa: E402
 
-VERSION = "4.14"
+VERSION = "4.15"
 TITLE = f"prospero-win sender v{VERSION}: send a game to your PS5"
 SETTINGS = pw_quick.STATE_DIR / "settings.json"
 BASE_NAME = "prospero-base-prefix.zip"

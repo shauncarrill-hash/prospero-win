@@ -429,6 +429,56 @@ def test_slow_console_reconnects() -> None:
         assert sender.progress.done_bytes == sender.progress.total_bytes
 
 
+def test_files_go_over_several_connections_at_once() -> None:
+    class Lane(DirRemote):
+        def __init__(self, root, shared):
+            super().__init__(root)
+            self.shared = shared
+
+        def clone(self):
+            self.shared["opened"] += 1
+            return Lane(self.root, self.shared)
+
+        def write(self, path, data):
+            self.shared["threads"].add(pw_quick.threading.get_ident())
+            pw_quick.time.sleep(0.002)  # long enough for the lanes to overlap
+            super().write(path, data)
+
+        def write_stream(self, path, stream):
+            self.shared["threads"].add(pw_quick.threading.get_ident())
+            if path.endswith("hit.wav") and not self.shared["failed"]:
+                self.shared["failed"] = True
+                stream.read(100)
+                raise TimeoutError("timed out")
+            super().write_stream(path, stream)
+
+        def reconnect(self):
+            self.shared["reconnects"] += 1
+
+        def close(self):
+            self.shared["closed"] += 1
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        make_game(root), make_base(root)
+        console = make_console(root)[0]
+        alone = make_console(root / "alone")[1]
+        send(root, alone, state=root / "alone-state")
+        shared = {"threads": set(), "opened": 0, "closed": 0, "failed": False, "reconnects": 0}
+        class NoWaiting(pw_quick.threading.Event):
+            def wait(self, timeout=None):
+                return self.is_set()
+        sender = send(root, Lane(console, shared), cancel=NoWaiting())
+        assert len(shared["threads"]) > 1, shared
+        assert shared["opened"] and shared["opened"] == shared["closed"], shared
+        assert shared["failed"] and shared["reconnects"] == 1, shared
+        assert sender.progress.done_bytes == sender.progress.total_bytes
+        assert sender.progress.done_files == sender.progress.total_files
+        def tree(top):
+            return {str(path.relative_to(top)): path.read_bytes() for path in sorted(top.rglob("*")) if path.is_file()}
+        assert tree(console / "data/prospero-win/prefixes") == tree(root / "alone/console/data/prospero-win/prefixes")
+
+
 def test_deleted_game_is_sent_again_in_full() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

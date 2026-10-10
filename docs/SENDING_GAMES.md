@@ -72,6 +72,12 @@ send and press **Send** again later: it carries on where it stopped. Sending a
 game that is already on the PS5 asks first, since its saves and settings
 there would be replaced.
 
+Files go over four FTP connections at once (`FTP_LANES` in
+`tools/pw_quick.py`). Each file costs several round trips before its bytes
+move, which for a prefix's thousands of small files is most of a send;
+ftpsrv serves each connection on its own thread, so they overlap. A console
+that refuses the extra connections gets as many as it takes.
+
 ## What it does
 
 It does what [installing games](INSTALLING_GAMES.md) and `pw_prefix.py push`
