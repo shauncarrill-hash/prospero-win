@@ -338,7 +338,9 @@ def plan(source, exe, imports: set[str], graphics: str) -> Plan:
 
     # Graphics
     if "d3d12.dll" in imports and not result.engine:
-        older = any(re.match(r"^(d3d9|d3d11|dxgi)\.dll$", name) for name in imports)
+        # dxgi.dll doesn't count: Direct3D 12 uses it too (Hades II imports
+        # only d3d12 and dxgi, and stalled on a black screen)
+        older = any(re.match(r"^(d3d9|d3d10(_1)?|d3d11|vulkan-1)\.dll$", name) for name in imports)
         if older:
             result.warn("it can use Direct3D 12, which freezes the console: choose Direct3D 11 "
                         "in its settings if it has the choice")

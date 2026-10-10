@@ -94,6 +94,8 @@ def test_xna_named_by_the_exe() -> None:
 def test_direct3d12_only_is_stopped() -> None:
     game = suggest({"D/D.exe": pe(64, ("d3d12.dll", "kernel32.dll"), padding=100_000)})
     assert "stop" in levels(game) and "Direct3D 12" in text(game), text(game)
+    game = suggest({"D/D.exe": pe(64, ("d3d12.dll", "dxgi.dll"), padding=100_000)})
+    assert "stop" in levels(game), text(game)
     game = suggest({"D/D.exe": pe(64, ("d3d12.dll", "d3d11.dll"), padding=100_000)})
     assert "stop" not in levels(game) and game.graphics == "dxvk", text(game)
 

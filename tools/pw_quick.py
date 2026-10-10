@@ -645,6 +645,9 @@ class Progress:
     skipped: int = 0
     message: str = ""
     log: list[str] = field(default_factory=list)
+    connections: int = 1      # FTP connections sending at once
+    # What each connection is sending now, by connection: Sender.each's lanes
+    active: dict[int, str] = field(default_factory=dict)
 
 
 class CountingReader:
@@ -835,8 +838,9 @@ class Sender:
 
         def send_one(item: Item, remote) -> None:
             nonlocal unsaved
-            self.progress.current = item.key
+            self.progress.current = self.progress.active[id(remote)] = item.key
             self.retrying(lambda: self.put(item, remote), remote)
+            self.progress.active.pop(id(remote), None)
             with self.lock:
                 state[item.key] = item.size
                 unsaved += 1
@@ -906,10 +910,12 @@ class Sender:
                     self.lanes = len(self.spares) + 1  # the console takes fewer: use what it gave
                     break
         remotes = [self.remote, *self.spares[:max(wanted, 0)]]
+        self.progress.connections = len(remotes)
         if len(remotes) == 1:
             for task in tasks:
                 self.check_cancel()
                 work(task, self.remote)
+            self.progress.active.clear()
             return
         pending, taking, errors = iter(tasks), threading.Lock(), []
 
@@ -930,6 +936,7 @@ class Sender:
             thread.start()
         for thread in threads:
             thread.join()
+        self.progress.active.clear()
         if errors:
             # A real failure over the Cancelled it made the other lanes stop with
             raise next((error for error in errors if not isinstance(error, Cancelled)), errors[0])
@@ -983,6 +990,7 @@ class Sender:
             key, size = file
             target = f"{self.remote_mono}/{key}"
             if remote.size(target) != size:
+                self.progress.active[id(remote)] = f"Wine Mono: {key}"
                 data = self.mono.read(key)
                 self.retrying(lambda: remote.write(target, data), remote)
             with self.lock:

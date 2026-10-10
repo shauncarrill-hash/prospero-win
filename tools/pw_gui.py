@@ -19,6 +19,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -27,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pw_quick  # noqa: E402
 from pw_quick import QuickError  # noqa: E402
 
-VERSION = "4.15"
+VERSION = "4.16"
 TITLE = f"prospero-win sender v{VERSION}: send a game to your PS5"
 SETTINGS = pw_quick.STATE_DIR / "settings.json"
 BASE_NAME = "prospero-base-prefix.zip"
@@ -58,6 +59,88 @@ def save_settings(values: dict) -> None:
         SETTINGS.write_text(json.dumps(values, indent=1))
     except OSError:
         pass
+
+
+BACKGROUND = pw_quick.PRESETS.parent / "assets" / "background.png"
+
+
+class Backdrop:
+    """A picture behind the whole window. Tk can't make a widget see-through,
+    so every frame and label shows its own piece of the picture: frames
+    through a label lowered under their children, labels as their image with
+    the text drawn on it. The picture is faded towards the window's colour
+    beforehand (tools/assets), so the text stays easy to read."""
+
+    def __init__(self, root: tk.Tk, path: Path, colour: str):
+        self.root, self.colour = root, colour
+        self.picture = tk.PhotoImage(master=root, file=str(path))
+        self.pieces: dict[str, tk.PhotoImage] = {}
+        self.behind: dict[str, tk.Label] = {}
+        self.pending = False
+        # A label is as big as its picture then: padding would grow it each paint
+        style = ttk.Style(root)
+        for name in ("TLabel", "Hint.TLabel", "Title.TLabel"):
+            style.configure(name, padding=0, borderwidth=0)
+        style.configure("Hint.TLabel", foreground="#333333")  # grey on the picture is hard to read
+
+    def cover(self, widget) -> None:
+        """Gives widget and everything in it the picture, now and whenever
+        the layout moves."""
+        self.root.bind("<Configure>", self.moved, add="+")
+        self.later()
+
+    def moved(self, event) -> None:
+        # Only a change of size: painting itself configures the labels
+        piece = self.pieces.get(str(event.widget))
+        if event.widget is self.root or (piece is not None and
+                                         (piece.width(), piece.height()) != (event.width, event.height)):
+            self.later()
+
+    def later(self) -> None:
+        if not self.pending:
+            self.pending = True
+            self.root.after(30, self.paint)
+
+    def paint(self) -> None:
+        self.pending = False
+        left = (self.picture.width() - self.root.winfo_width()) // 2
+        stack = list(self.root.winfo_children())
+        while stack:
+            widget = stack.pop()
+            kind = widget.winfo_class()
+            if kind in ("TFrame", "TLabelframe"):
+                self.fill(widget, left)
+                stack.extend(child for child in widget.winfo_children() if child not in self.behind.values())
+            elif kind == "TLabel":
+                self.fill(widget, left)
+
+    def fill(self, widget, left: int) -> None:
+        width, height = widget.winfo_width(), widget.winfo_height()
+        if width < 2 or height < 2:
+            return
+        x = widget.winfo_rootx() - self.root.winfo_rootx() + left
+        y = widget.winfo_rooty() - self.root.winfo_rooty()
+        piece = tk.PhotoImage(master=self.root, width=width, height=height)
+        piece.put(self.colour, to=(0, 0, width, height))
+        x1, y1 = max(x, 0), max(y, 0)
+        x2, y2 = min(x + width, self.picture.width()), min(y + height, self.picture.height())
+        if x2 > x1 and y2 > y1:
+            piece.tk.call(piece, "copy", self.picture, "-from", x1, y1, x2, y2, "-to", x1 - x, y1 - y)
+        key = str(widget)
+        self.pieces[key] = piece
+        if widget.winfo_class() == "TLabel":
+            widget.configure(image=piece, compound="center")
+            return
+        label = self.behind.get(key)
+        if label is None:
+            label = self.behind[key] = tk.Label(widget, borderwidth=0, highlightthickness=0)
+            label.place(x=0, y=0, relwidth=1, relheight=1)
+            label.lower()
+        label.configure(image=piece)
+
+
+def shorten(path: str, width: int = 64) -> str:
+    return path if len(path) <= width else "…" + path[-(width - 1):]
 
 
 def human(size: float) -> str:
@@ -107,6 +190,8 @@ class App:
         self.winedebug = tk.StringVar()
         self.checks = tk.StringVar()
         self.status = tk.StringVar(value="Pick a game to start.")
+        self.transfer = tk.StringVar()    # speed, connections and their files, while sending
+        self.samples: deque[tuple[float, int]] = deque()
         self.elf_port = tk.StringVar(value=str(settings.get("elf_port", pw_quick.ELF_PORT)))
         self.payloads: list[dict] = [entry for entry in settings.get("payloads", [])
                                      if isinstance(entry, dict) and entry.get("path")]
@@ -209,6 +294,8 @@ class App:
         self.bar = ttk.Progressbar(outer, mode="determinate", maximum=1000)
         self.bar.grid(sticky="ew", pady=(4, 4))
         ttk.Label(outer, textvariable=self.status, wraplength=580, justify="left").grid(sticky="w")
+        ttk.Label(outer, textvariable=self.transfer, style="Hint.TLabel", wraplength=600,
+                  justify="left").grid(sticky="w")
 
         buttons = ttk.Frame(outer)
         buttons.grid(sticky="ew", pady=(12, 0))
@@ -220,6 +307,11 @@ class App:
         self.send_button = ttk.Button(buttons, text="Send to PS5", command=self.send, state="disabled")
         self.send_button.grid(row=0, column=2)
 
+        if BACKGROUND.is_file():
+            try:
+                Backdrop(root, BACKGROUND, style.lookup("TFrame", "background") or "#f0f0f0").cover(outer)
+            except tk.TclError:
+                pass  # no picture is better than no window
         root.protocol("WM_DELETE_WINDOW", self.close)
         root.after(100, self.pump)
 
@@ -340,9 +432,13 @@ class App:
         self.cancel.clear()
         self.busy(True)
 
+        self.samples.clear()
+        self.transfer.set("")
+
         def report(progress: pw_quick.Progress) -> None:
             self.events.put(("progress", (progress.done_bytes, progress.total_bytes, progress.done_files,
-                                          progress.total_files, progress.current, progress.message)))
+                                          progress.total_files, progress.current, progress.message,
+                                          progress.connections, tuple(progress.active.copy().values()))))
 
         def body() -> None:
             try:
@@ -358,16 +454,33 @@ class App:
         self.worker = threading.Thread(target=body, daemon=True)
         self.worker.start()
 
+    def show_transfer(self, done: int, total: int, files: int, total_files: int,
+                      connections: int, active: tuple[str, ...]) -> None:
+        """Speed over the last few seconds, and what each connection is sending."""
+        now = time.monotonic()
+        self.samples.append((now, done))
+        while len(self.samples) > 2 and now - self.samples[0][0] > 3:
+            self.samples.popleft()
+        then, before = self.samples[0]
+        speed = f"{human(max(done - before, 0) / (now - then))}/s" if now - then >= 0.5 else "…"
+        lines = [f"{speed} · {human(done)} of {human(total)} · file {files} of {total_files} · "
+                 f"{connections} connection{'s' if connections != 1 else ''}"]
+        if active:
+            lines.append("   ".join(f"{index}: {shorten(name.rsplit('/', 1)[-1], 28)}"
+                                    for index, name in enumerate(active, start=1)))
+        self.transfer.set("\n".join(lines))
+
     def pump(self) -> None:
         try:
             while True:
                 kind, value = self.events.get_nowait()
                 if kind == "progress":
-                    done, total, files, total_files, current, message = value
+                    done, total, files, total_files, current, message, connections, active = value
                     if total:
                         self.bar.configure(value=1000 * done / total)
                         self.status.set(message or f"{human(done)} of {human(total)} · file {files} of "
                                                    f"{total_files} · {current}")
+                        self.show_transfer(done, total, files, total_files, connections, active)
                     elif message:
                         self.status.set(message)
                 elif kind == "status":
@@ -382,6 +495,7 @@ class App:
                         self.status.set(value)
                 elif kind == "done":
                     callback, result = value
+                    self.transfer.set("")
                     self.busy(False)
                     if callback:
                         callback(result)
@@ -399,6 +513,7 @@ class App:
                     else:
                         self.send(overwrite=not answer, settings_only=answer)
                 elif kind == "error":
+                    self.transfer.set("")
                     self.busy(False)
                     self.status.set(value)
                     messagebox.showerror("prospero-win", value, parent=self.root)
