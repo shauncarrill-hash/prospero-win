@@ -345,7 +345,11 @@ def plan(source, exe, imports: set[str], graphics: str) -> Plan:
             result.warn("it can use Direct3D 12, which freezes the console: choose Direct3D 11 "
                         "in its settings if it has the choice")
         else:
-            result.stop("it needs Direct3D 12, which freezes the console")
+            # Wine's own dxgi and d3d12 (vkd3d) instead of DXVK's dxgi, which
+            # offers no Direct3D 12 adapter: Hades II found none with it.
+            result.graphics = "auto"
+            result.warn("it needs Direct3D 12: it gets Wine's own (vkd3d). New and not yet tried on the "
+                        "console; vkd3d-proton froze it, so if the screen stops, hold the power button")
     if not result.engine:
         result.ok({"dxvk": "Direct3D through DXVK, which works on the console",
                    "opengl": "OpenGL, which works on the console",
