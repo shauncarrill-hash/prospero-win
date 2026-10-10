@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pw_quick  # noqa: E402
 from pw_quick import QuickError  # noqa: E402
 
-VERSION = "4.26"
+VERSION = "4.27"
 SECRET = "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=RDdQw4w9WgXcQ&start_radio=1"
 TITLE = f"prospero-win sender v{VERSION}: send a game to your PS5"
 SETTINGS = pw_quick.STATE_DIR / "settings.json"
@@ -609,7 +609,7 @@ class App:
 
     def show_game(self, game: pw_quick.Game) -> None:
         """What the sender worked out for this program (tools/pw_autoconfig.py)."""
-        self.found = (game.engine, game.checks)
+        self.found = (game.engine, game.checks, game.launcher)
         self.show_graphics(game.graphics)
         self.arguments.set(game.arguments)
         self.environment.set(pw_quick.format_environment(game.environment))
@@ -620,8 +620,9 @@ class App:
         exe = self.current_exe()
         if exe and self.source:
             exe, plan = pw_quick.autoconfigure(self.source, exe, self.exes)
-            self.exe.set(exe.key)
-            self.show_game(pw_quick.configured(self.source, exe, plan, self.name.get()))
+            game = pw_quick.configured(self.source, exe, plan, self.name.get(), self.exes)
+            self.exe.set(game.exe)
+            self.show_game(game)
 
     def current_exe(self) -> pw_quick.Executable | None:
         return next((exe for exe in self.exes if exe.key == self.exe.get()), None)
@@ -632,12 +633,14 @@ class App:
             raise QuickError("Choose the program to start.")
         name = self.name.get().strip() or exe.key
         graphics = next(key for key, label in GRAPHICS_LABELS.items() if label == self.graphics.get())
+        found = getattr(self, "found", ("", [], ""))
+        engine, checks, launcher = (found[0], found[1], found[2] if len(found) > 2 else "")
         game = pw_quick.Game(name=name, slug=pw_quick.slugify(name), exe=exe.key, bits=exe.info.bits,
                              graphics=graphics, arguments=self.arguments.get().strip(),
                              desktop=self.desktop.get().strip(), preset=self.preset.get().strip(),
                              environment=pw_quick.parse_environment(self.environment.get()),
-                             winedebug=self.winedebug.get().strip())
-        game.engine, game.checks = getattr(self, "found", ("", []))
+                             winedebug=self.winedebug.get().strip(), launcher=launcher)
+        game.engine, game.checks = engine, checks
         game.check()
         return game
 

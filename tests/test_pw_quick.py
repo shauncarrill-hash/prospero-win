@@ -28,6 +28,10 @@ import pw_prefix  # noqa: E402
 import pw_quick  # noqa: E402
 from test_pw_prefix import DirRemote  # noqa: E402
 
+# The sender ships a translator beside the sources. These tests cover the
+# case where the console has to supply it, so the bundled copy stays hidden.
+pw_quick.BUNDLED_CPU_DLL = Path("/nonexistent/wowprospero.dll")
+
 SYSTEM_REG = (b"WINE REGISTRY Version 2\n\n[Software\\\\Microsoft\\\\Wow64\\\\x86] 1700000000\n"
               b'@="wow64cpu.dll"\n\n[Software\\\\Wine] 1700000000\n"Version"="wine-11.17"\n')
 
@@ -632,18 +636,6 @@ def test_roman_numerals_find_the_game() -> None:
         assert game.exe == "Ship/Hades2.exe", game.exe
 
 
-def main() -> int:
-    tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
-    for test in tests:
-        test()
-    print(f"test_pw_quick: {len(tests)} tests passed")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
-
-
 def test_update_settings_only() -> None:
     """A settings update rewrites the profile and nothing else."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -701,8 +693,8 @@ def test_reg_files_go_into_the_registry():
     assert b"Age of Empires" not in gone.split(b"Wow6432Node")[0]
 
 
-def test_direct3d12_game_gets_the_proxy_beside_its_exe(tmp_path):
-    zip_path = tmp_path / "Hades.zip"
+def test_direct3d12_game_gets_the_proxy_beside_its_exe():
+    zip_path = Path(tempfile.mkdtemp()) / "Hades.zip"
     with zipfile.ZipFile(zip_path, "w") as archive:
         archive.writestr("Ship/Hades2.exe", b"MZ" + b"\0" * 100)
     game = pw_quick.Game(name="Hades II", slug="hades-ii", exe="Ship/Hades2.exe", bits=64, graphics="d3d12")
@@ -714,8 +706,8 @@ def test_direct3d12_game_gets_the_proxy_beside_its_exe(tmp_path):
     assert sender.environment()["PW_FAKE_RAM_GB"] == "16"
 
 
-def test_the_exe_that_draws_beats_its_launcher(tmp_path):
-    zip_path = tmp_path / "ra2.zip"
+def test_the_exe_that_draws_beats_its_launcher():
+    zip_path = Path(tempfile.mkdtemp()) / "ra2.zip"
     with zipfile.ZipFile(zip_path, "w") as archive:
         archive.writestr("RA2.exe", pe(32, ("kernel32.dll", "user32.dll", "gdi32.dll"), padding=2_000_000))
         archive.writestr("Game.exe", pe(32, ("kernel32.dll", "ddraw.dll"), padding=1_000_000))
@@ -723,8 +715,8 @@ def test_the_exe_that_draws_beats_its_launcher(tmp_path):
     assert exes[0].key == "Game.exe", [(exe.key, exe.score) for exe in exes]
 
 
-def test_launcher_game_runs_through_pwexec(tmp_path):
-    zip_path = tmp_path / "ra2.zip"
+def test_launcher_game_runs_through_pwexec():
+    zip_path = Path(tempfile.mkdtemp()) / "ra2.zip"
     with zipfile.ZipFile(zip_path, "w") as archive:
         archive.writestr("RA2.exe", pe(32, ("kernel32.dll", "user32.dll", "gdi32.dll"), padding=2_000_000))
         archive.writestr("Game.exe", pe(32, ("kernel32.dll", "ddraw.dll"), padding=1_000_000))
@@ -740,10 +732,77 @@ def test_launcher_game_runs_through_pwexec(tmp_path):
     assert f"{game.folder}/pwexec32.exe" in found, sorted(found)
 
 
-import pytest  # noqa: E402
+def test_picked_launcher_uses_the_game() -> None:
+    """Picking the launcher still configures the game it starts, and a
+    .NET-looking launcher (or a stray XNA dll) does not hide the handoff."""
+    with tempfile.TemporaryDirectory() as tmp:
+        zip_path = Path(tmp) / "ra2.zip"
+        with zipfile.ZipFile(zip_path, "w") as archive:
+            archive.writestr("RA2.exe", pe(32, ("kernel32.dll", "user32.dll", "gdi32.dll", "mscoree.dll"),
+                                            padding=2_000_000) + b"Microsoft.Xna.Framework.Game")
+            archive.writestr("Game.exe", pe(32, ("kernel32.dll", "ddraw.dll"), padding=1_000_000))
+            archive.writestr("extra/Microsoft.Xna.Framework.dll", pe(32, ("mscoree.dll",)))
+        source = pw_quick.Source(zip_path)
+        try:
+            exes = pw_quick.find_executables(source, "ra2")
+            ra2 = next(exe for exe in exes if exe.key == "RA2.exe")
+            _exe, plan = pw_quick.autoconfigure(source, ra2, exes)
+            game = pw_quick.configured(source, ra2, plan, "Red Alert 2", exes)
+            assert game.exe == "Game.exe", game.exe
+            assert game.launcher == "RA2.exe", game.launcher
+            assert game.graphics == "auto", (game.graphics, game.engine, game.checks)
+            assert game.engine != "XNA"
+            assert "pwexec32.exe" in game.profile() and '"RA2.exe"' in game.profile()
+        finally:
+            source.close()
 
 
-@pytest.fixture(autouse=True)
-def app_translator(monkeypatch):
-    """These tests send the app's own translator, not the bundled one."""
-    monkeypatch.setattr(pw_quick, "BUNDLED_CPU_DLL", pw_quick.Path("/nonexistent/wowprospero.dll"))
+def test_named_launcher_hands_off_and_graphics_come_from_the_game() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        zip_path = Path(tmp) / "gta.zip"
+        with zipfile.ZipFile(zip_path, "w") as archive:
+            archive.writestr("LaunchGTAIV.exe", pe(32, ("kernel32.dll", "user32.dll"), padding=500_000))
+            archive.writestr("GTAIV.exe", pe(32, ("kernel32.dll", "d3d9.dll"), padding=2_000_000))
+        source = pw_quick.Source(zip_path)
+        try:
+            game, _ = pw_quick.suggest(source)
+            assert game.exe == "GTAIV.exe", game.exe
+            assert game.launcher == "LaunchGTAIV.exe", game.launcher
+            assert game.graphics == "dxvk", game.graphics
+            exes = pw_quick.find_executables(source, "gta")
+            launch = next(exe for exe in exes if exe.key == "LaunchGTAIV.exe")
+            _picked, plan = pw_quick.autoconfigure(source, launch, exes)
+            again = pw_quick.configured(source, launch, plan, "GTA", exes)
+            assert again.exe == "GTAIV.exe" and again.launcher == "LaunchGTAIV.exe", (again.exe, again.launcher)
+            assert again.graphics == "dxvk"
+        finally:
+            source.close()
+
+
+def test_dotnet_game_keeps_its_launcher() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        zip_path = Path(tmp) / "xna.zip"
+        with zipfile.ZipFile(zip_path, "w") as archive:
+            archive.writestr("Game.exe", pe(32, ("mscoree.dll", "d3d9.dll"), padding=1_000_000)
+                             + b"Microsoft.Xna.Framework.Game")
+            archive.writestr("Start.exe", pe(32, ("kernel32.dll", "user32.dll"), padding=200_000))
+        source = pw_quick.Source(zip_path)
+        try:
+            game, _ = pw_quick.suggest(source)
+            assert game.engine == "XNA" and game.graphics == "dxvk", (game.engine, game.graphics)
+            assert game.launcher == "Start.exe", game.launcher
+            assert "pwexec32.exe" in game.profile()
+        finally:
+            source.close()
+
+
+def main() -> int:
+    tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
+    for test in tests:
+        test()
+    print(f"test_pw_quick: {len(tests)} tests passed")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

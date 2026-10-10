@@ -324,7 +324,10 @@ def plan(source, exe, imports: set[str], graphics: str) -> Plan:
             pass
     if files.has("coreclr.dll"):
         result.ok(".NET runtime bundled: its memory use is capped to what the console grants")
-    elif "mscoree.dll" in exe_imports or xna:
+    elif "mscoree.dll" in exe_imports:
+        # The exe itself has to start the CLR. A Microsoft.Xna.Framework.dll
+        # sitting elsewhere in the tree (a launcher's leftover, another tool)
+        # used to mark the whole game as XNA and turn the handoff loader off.
         result.engine = result.engine or ("XNA" if xna else ".NET Framework")
         if xna:
             result.graphics = "dxvk"

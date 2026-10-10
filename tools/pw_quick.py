@@ -540,42 +540,77 @@ def suggest(source: Source) -> tuple[Game, list[Executable]]:
     if not exes:
         raise QuickError(f"{source.path} has no Windows executable (.exe)")
     exe, plan = autoconfigure(source, exes[0], exes)
-    return configured(source, exe, plan, name), exes
+    return configured(source, exe, plan, name, exes), exes
 
 
-def find_launcher(source: Source, exe: Executable, exes: list[Executable]) -> str:
-    """A launcher the game is started through (RA2.exe before Game.exe), or "".
-    For an engine-less game whose own program draws, a second program in the
-    same folder that draws nothing is the launcher: the console can't start it
-    the normal way, so pwexec runs it and the game one after the other. The
-    sender picks the drawing program as the game, so the launcher is the
-    other, plausible, same-architecture, windowed program beside it that
-    imports no graphics library and isn't a tool (setup, patcher, crash
-    reporter, ...)."""
-    if not (graphics_of(exe.info.imports) or "vulkan-1.dll" in exe.info.imports):
-        return ""                               # the game itself draws nothing: no launcher pattern
-    folder = posixpath.dirname(exe.key)
-    best = None
-    for other in exes:
-        if other.key == exe.key or posixpath.dirname(other.key) != folder:
-            continue
-        if other.info.bits != exe.info.bits or not other.info.gui:
-            continue
-        if graphics_of(other.info.imports) or "d3d12.dll" in other.info.imports or "vulkan-1.dll" in other.info.imports:
-            continue                            # itself a renderer: not a launcher
-        if NOT_THE_GAME.search(PurePosixPath(other.key).stem.lower()):
-            continue                            # setup, patcher, crash reporter, ...
-        if best is None or other.score > best.score:
-            best = other
-    return best.key if best else ""
+def _draws(exe: Executable) -> bool:
+    imports = exe.info.imports
+    return bool(graphics_of(imports) or "d3d12.dll" in imports or "vulkan-1.dll" in imports)
 
 
-def configured(source: Source, exe: Executable, plan: pw_autoconfig.Plan, name: str) -> Game:
+def _is_tool(exe: Executable) -> bool:
+    """Setup, patcher, crash reporter, and the like. A program whose name says
+    it launches the game (LaunchGTAIV.exe) is the handoff, not one of these."""
+    stem = PurePosixPath(exe.key).stem.lower()
+    if re.search(r"launch|start", stem):
+        return False
+    return bool(NOT_THE_GAME.search(stem))
+
+
+def launch_pair(exe: Executable, exes: list[Executable]) -> tuple[Executable, str]:
+    """The game to configure, and the launcher it is started through (or "").
+
+    Same folder, same architecture, windowed. The program that imports a
+    graphics library is the game; a sibling that draws nothing is the
+    launcher (RA2.exe before Game.exe). Either one may be the exe that was
+    picked. Setup programs stay out of the pair."""
+    def eligible(other: Executable) -> bool:
+        return (other.key != exe.key
+                and posixpath.dirname(other.key) == posixpath.dirname(exe.key)
+                and other.info.bits == exe.info.bits
+                and other.info.gui
+                and not _is_tool(other))
+
+    siblings = [other for other in exes if eligible(other)]
+    if _is_tool(exe):
+        return exe, ""
+    if _draws(exe):
+        quiet = [other for other in siblings if not _draws(other)]
+        best = max(quiet, key=lambda other: other.score, default=None)
+        return exe, (best.key if best else "")
+    drawing = [other for other in siblings if _draws(other)]
+    best = max(drawing, key=lambda other: other.score, default=None)
+    if best is None:
+        return exe, ""
+    return best, exe.key
+
+
+def configured(source: Source, exe: Executable, plan: pw_autoconfig.Plan, name: str,
+               exes: list[Executable] | None = None) -> Game:
     environment = suggest_environment(source)
     environment.update(plan.environment)
-    launcher = "" if (plan.engine or plan.exe) else find_launcher(source, exe, find_executables(source, name))
-    return Game(name=name, slug=slugify(name), exe=exe.key, bits=exe.info.bits,
-                graphics=plan.graphics or guess_graphics(source, exe), arguments=" ".join(plan.arguments),
+    # Unreal and Ren'Py name the real program and start it directly. Every
+    # other game, including .NET and XNA, can still be handed off by a launcher.
+    if plan.exe:
+        game_exe, launcher = exe, ""
+    else:
+        game_exe, launcher = launch_pair(exe, exes if exes is not None else find_executables(source, name))
+        if game_exe is not exe:
+            # Graphics, engine and checks come from the game, not the launcher.
+            plan = pw_autoconfig.plan(source, game_exe, game_imports(source, game_exe),
+                                      guess_graphics(source, game_exe))
+            environment = suggest_environment(source)
+            environment.update(plan.environment)
+            if plan.exe:
+                launcher = ""
+    if launcher:
+        base = posixpath.basename(launcher)
+        plan.checks = [pw_autoconfig.Check(
+            pw_autoconfig.OK,
+            f"starts through {base}: the console can't start a second program, "
+            f"so {base} and the game run one after the other")] + list(plan.checks)
+    return Game(name=name, slug=slugify(name), exe=game_exe.key, bits=game_exe.info.bits,
+                graphics=plan.graphics or guess_graphics(source, game_exe), arguments=" ".join(plan.arguments),
                 environment=environment, engine=plan.engine, checks=plan.checks, launcher=launcher)
 
 
