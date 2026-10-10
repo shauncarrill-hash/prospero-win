@@ -17,7 +17,8 @@ The rules come from ProbeTris v6.1 on a PS5 (2026-10-08). What it measured:
   base prefix's FFmpeg decoders (tools/build_media.sh), and DirectShow
   only through LAV Filters (also in the base prefix).
 - No MIDI device; DirectInput sees no game controller (XInput does).
-- .NET Framework 4 is absent (no Wine Mono); .NET 5+ games bring their own
+- .NET Framework 4 is absent; Wine Mono stands in for it (the sender puts it
+  on the console once, pw_quick.MONO_*); .NET 5+ games bring their own
   runtime and need GC limits (pw_quick.DOTNET).
 - Fonts: only Tahoma and Wingdings; the base prefix adds Liberation (for
   Arial, Times New Roman, Courier New) and a Japanese Gothic.
@@ -319,8 +320,13 @@ def plan(source, exe, imports: set[str], graphics: str) -> Plan:
         result.ok(".NET runtime bundled: its memory use is capped to what the console grants")
     elif "mscoree.dll" in exe_imports or xna:
         result.engine = result.engine or ("XNA" if xna else ".NET Framework")
-        result.stop(f"{'XNA needs' if xna else 'it is a .NET Framework program, which needs'} "
-                    ".NET Framework 4, which the console's Wine doesn't have (no Wine Mono)")
+        if xna:
+            result.graphics = "dxvk"
+            # FNA otherwise tries OpenGL first, which doesn't work under DXVK's overrides
+            result.environment["FNA3D_FORCE_DRIVER"] = "D3D11"
+            result.ok("XNA through Wine Mono's FNA, drawing with Direct3D 11 through DXVK")
+        result.warn("needs .NET Framework 4: it runs on Wine Mono instead, which the sender puts on the "
+                    "PS5 once (about 125 MB). New: not yet confirmed on the console")
     elif files.find(r"\.runtimeconfig\.json$") and not files.has("hostfxr.dll"):
         result.stop("it needs an installed .NET runtime; only self-contained .NET games run")
 

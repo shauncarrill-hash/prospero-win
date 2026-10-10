@@ -19,6 +19,14 @@ that need registry entries an installer writes, still go through a recipe
   prefix](#making-the-base-prefix)).
 - The game, as a folder or a zip.
 
+## .NET Framework and XNA games
+
+The console's Wine has no .NET Framework. Games that need it (and XNA games)
+run on Wine Mono instead: `wine-mono-11.3.0.zip` next to the sender
+(`tools/build_mono.sh` makes it) is put on the PS5 once, in
+`/data/prospero-win/shared`, and each such game's prefix points at it. XNA
+games go through Wine Mono's FNA on Direct3D 11 (DXVK).
+
 ## Getting the logs
 
 **Get logs** (next to **Check**) copies the app's logs

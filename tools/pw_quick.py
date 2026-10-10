@@ -65,6 +65,15 @@ GAMES = "drive_c/Games"
 BASE_LINKS = f"dosdevices/{pw_prefix.LINK_TABLE}"
 DXVK_VERSION = "2.6.2"
 FTP_ATTEMPTS = 6
+# Wine Mono, Wine's .NET Framework 4 stand-in, for .NET Framework and XNA
+# games: one copy on the console, which each such game's prefix points at
+# (HKCU\Software\Wine\Mono RuntimePath; Z: is the console's /). The
+# version is the one the app's Wine asks for (dlls/appwiz.cpl/addons.c).
+MONO_VERSION = "11.3.0"
+MONO_NAME = f"wine-mono-{MONO_VERSION}"
+MONO_ENGINES = (".NET Framework", "XNA")
+MONO_KEY = "Software\\Wine\\Mono"
+MONO_MARKER = ".pw-complete"
 UNSHARE_LIMIT = 512 << 20
 DXVK_DLLS = ("d3d8", "d3d9", "d3d10core", "d3d11", "dxgi")
 GRAPHICS = ("auto", "gdi", "dxvk", "opengl")
@@ -397,6 +406,10 @@ class Game:
     engine: str = ""
     checks: list = field(default_factory=list)     # pw_autoconfig.Check
 
+    @property
+    def mono(self) -> bool:
+        return self.engine in MONO_ENGINES
+
     def check(self) -> None:
         if not SLUG.match(self.slug):
             raise QuickError(f"{self.slug!r} is not a usable id: lower-case letters, digits and dashes")
@@ -636,8 +649,11 @@ class Sender:
     def __init__(self, remote, game: Game, source: Source, base: Source,
                  dxvk: dict[str, bytes] | None = None, cpu_dll: bytes | None = None,
                  remote_root: str = REMOTE_ROOT, state_dir: Path = STATE_DIR, host: str = "console",
-                 report: Callable[[Progress], None] | None = None, cancel: threading.Event | None = None):
+                 report: Callable[[Progress], None] | None = None, cancel: threading.Event | None = None,
+                 mono: Source | None = None):
         game.check()
+        if game.mono and mono is None:
+            raise QuickError(f"{game.name} needs Wine Mono, and {MONO_NAME}.zip isn't next to the sender")
         if game.exe not in source.files:
             raise QuickError(f"{game.exe} is not in {source.path}")
         if "system.reg" not in base.files or "user.reg" not in base.files:
@@ -648,9 +664,11 @@ class Sender:
         if game.graphics == "dxvk" and not dxvk:
             raise QuickError("the game uses DXVK, and no DXVK DLLs were given")
         self.remote, self.game, self.source, self.base = remote, game, source, base
+        self.mono = mono if game.mono else None
         self.dxvk, self.cpu_dll = (dxvk or {}) if game.graphics == "dxvk" else {}, cpu_dll
         self.root = remote_root.rstrip("/")
         self.remote_prefix = f"{self.root}/prefixes/{game.slug}"
+        self.remote_mono = f"{self.root}/shared/{MONO_NAME}"
         self.state_path = Path(state_dir) / f"{re.sub(r'[^A-Za-z0-9.-]', '_', host)}-{game.slug}.json"
         self.progress = Progress()
         self.report = report or (lambda progress: None)
@@ -671,6 +689,9 @@ class Sender:
                 if key == "user.reg":
                     data = set_environment(data, self.game.environment)
                     data = set_values(data, FONT_KEY, font_replacements(self.base))
+                    if self.mono is not None:
+                        runtime = "Z:" + self.remote_mono.replace("/", "\\")
+                        data = set_values(data, MONO_KEY, {"RuntimePath": runtime})
                 data = to_console(key, data)
                 items[key] = Item(key, len(data), data=data)
             else:
@@ -736,6 +757,7 @@ class Sender:
             # The game's files this PC sent at the same size stay; the
             # registry, which holds the settings, goes again.
             state = {key: size for key, size in state.items() if key not in REGISTRY}
+        self.put_mono()
         if self.cpu_dll is None and self.remote.size(f"{self.remote_prefix}/{CPU_DLL}") is None:
             self.cpu_dll = fetch_app_cpu_dll(self.remote)
         items, dirs = self.items()
@@ -817,6 +839,27 @@ class Sender:
                     self.remote.reconnect()
                 except (OSError, EOFError, ftplib.Error):
                     pass  # the next try fails and waits again
+
+    def put_mono(self) -> None:
+        """Wine Mono on the console, once for every game that needs it."""
+        if self.mono is None or self.remote.size(f"{self.remote_mono}/{MONO_MARKER}") is not None:
+            return
+        files = sorted(self.mono.files.items())
+        self.say(f"putting Wine Mono on the PS5 once ({len(files)} files, "
+                 f"{sum(size for _, size in files) / (1 << 20):.0f} MB)")
+        for directory in sorted({posixpath.dirname(key) for key, _ in files} | set(self.mono.dirs)):
+            self.check_cancel()
+            self.retrying(lambda: self.remote.makedirs(posixpath.join(self.remote_mono, directory)))
+        for index, (key, size) in enumerate(files, start=1):
+            self.check_cancel()
+            target = f"{self.remote_mono}/{key}"
+            if self.remote.size(target) == size:
+                continue
+            data = self.mono.read(key)
+            self.retrying(lambda: self.remote.write(target, data))
+            if index % 50 == 0:
+                self.say(f"Wine Mono: {index} of {len(files)} files")
+        self.remote.write(f"{self.remote_mono}/{MONO_MARKER}", MONO_VERSION.encode())
 
     def put(self, item: Item) -> None:
         target = f"{self.remote_prefix}/{item.key}"
@@ -1026,6 +1069,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--preset", default="")
     parser.add_argument("--env", action="append", default=[], metavar="NAME=VALUE",
                         help="an environment variable for the game (added to the ones detected)")
+    parser.add_argument("--mono", help=f"{MONO_NAME}.zip, for .NET Framework and XNA games")
     parser.add_argument("--winedebug", default="", help="Wine log channels for the game, e.g. err+all,+seh")
     parser.add_argument("--dxvk", help="a DXVK release tarball, instead of downloading the pinned one")
     parser.add_argument("--overwrite", action="store_true", help="replace the console's copy of the game")
@@ -1070,7 +1114,8 @@ def main(argv: list[str] | None = None) -> int:
         if game.graphics == "dxvk":
             dxvk = dxvk_files(Path(args.dxvk) if args.dxvk else fetch_dxvk())
         remote = connect(args.host, args.port)
-        sender = Sender(remote, game, source, base, dxvk=dxvk, host=args.host, report=report)
+        mono = Source(args.mono) if game.mono and args.mono else None
+        sender = Sender(remote, game, source, base, dxvk=dxvk, host=args.host, report=report, mono=mono)
         if args.settings_only:
             sender.update_settings()
         else:

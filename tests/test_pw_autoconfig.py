@@ -79,10 +79,11 @@ def test_godot_embedded_pack() -> None:
     assert suggest({"G/G.exe": exe}).engine.startswith("Godot")
 
 
-def test_xna_is_stopped() -> None:
+def test_xna_runs_on_wine_mono() -> None:
     game = suggest({"X/X.exe": pe(32, ("mscoree.dll",), padding=100_000),
                     "X/Microsoft.Xna.Framework.dll": pe(32, ("mscoree.dll",))})
-    assert "stop" in levels(game) and "Wine Mono" in text(game), text(game)
+    assert "stop" not in levels(game) and "Wine Mono" in text(game), text(game)
+    assert game.mono and game.graphics == "dxvk"
 
 
 def test_direct3d12_only_is_stopped() -> None:

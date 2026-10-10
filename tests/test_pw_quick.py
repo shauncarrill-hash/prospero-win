@@ -509,6 +509,38 @@ def test_shared_sections_are_made_private() -> None:
         assert any(path.endswith("PINBALL.EXE") for path in remote.writes), remote.writes
 
 
+def test_net_framework_game_gets_wine_mono_once() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        make_zip(root / "Farm.zip", {"Farm/Farm.exe": pe(32, ("mscoree.dll",), padding=100_000),
+                                     "Farm/Content/a.xnb": b"x" * 10})
+        mono_zip = make_zip(root / f"{pw_quick.MONO_NAME}.zip", {
+            f"{pw_quick.MONO_NAME}/bin/libmono-2.0-x86.dll": b"m" * 5000,
+            f"{pw_quick.MONO_NAME}/lib/mono/4.5/mscorlib.dll": b"c" * 3000})
+        make_base(root)
+        console, remote = make_console(root)
+        source, base = pw_quick.Source(root / "Farm.zip"), pw_quick.Source(root / "base.zip")
+        game, _ = pw_quick.suggest(source)
+        assert game.mono, game.engine
+        try:
+            pw_quick.Sender(remote, game, source, base, state_dir=root / "state")
+            raise AssertionError("a .NET Framework game was accepted without Wine Mono")
+        except pw_quick.QuickError:
+            pass
+        pw_quick.Sender(remote, game, source, base, state_dir=root / "state",
+                        mono=pw_quick.Source(mono_zip)).send()
+        shared = console / "data/prospero-win/shared" / pw_quick.MONO_NAME
+        assert (shared / "bin/libmono-2.0-x86.dll").stat().st_size == 5000
+        assert (shared / pw_quick.MONO_MARKER).is_file()
+        user = (console / "data/prospero-win/prefixes/farm/user.reg").read_text()
+        assert "[Software\\\\Wine\\\\Mono]" in user, user
+        assert f'"RuntimePath"="Z:\\\\data\\\\prospero-win\\\\shared\\\\{pw_quick.MONO_NAME}"' in user, user
+        remote.writes.clear()
+        pw_quick.Sender(remote, game, source, base, state_dir=root / "state",
+                        mono=pw_quick.Source(mono_zip)).send(overwrite=True)
+        assert not any("/shared/" in path for path in remote.writes), remote.writes
+
+
 def main() -> int:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:
