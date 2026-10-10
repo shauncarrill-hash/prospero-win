@@ -65,6 +65,7 @@ GAMES = "drive_c/Games"
 BASE_LINKS = f"dosdevices/{pw_prefix.LINK_TABLE}"
 DXVK_VERSION = "2.6.2"
 FTP_ATTEMPTS = 6
+UNSHARE_LIMIT = 512 << 20
 DXVK_DLLS = ("d3d8", "d3d9", "d3d10core", "d3d11", "dxgi")
 GRAPHICS = ("auto", "gdi", "dxvk", "opengl")
 SCALING = ("fit", "integer", "stretch")
@@ -195,6 +196,34 @@ class PeInfo:
     bits: int
     imports: set[str]
     gui: bool
+
+
+SCN_MEM_SHARED = 0x10000000
+
+
+def unshared(data: bytes) -> bytes | None:
+    """The PE image with its shared sections made private, or None when it
+    has none. The console's Wine can't map a shared section that isn't
+    page-aligned there (UNDERTALE.exe's .mydata: "cannot run ... c000007b");
+    one copy of the game runs at a time, so private is the same to it."""
+    try:
+        if data[:2] != b"MZ":
+            return None
+        pe = struct.unpack_from("<I", data, 0x3C)[0]
+        if data[pe:pe + 4] != b"PE\0\0":
+            return None
+        sections, optional_size = struct.unpack_from("<H12xH", data, pe + 6)
+        table = pe + 24 + optional_size
+        patched = None
+        for index in range(sections):
+            at = table + 40 * index + 36
+            flags = struct.unpack_from("<I", data, at)[0]
+            if flags & SCN_MEM_SHARED:
+                patched = patched or bytearray(data)
+                struct.pack_into("<I", patched, at, flags & ~SCN_MEM_SHARED)
+        return bytes(patched) if patched else None
+    except struct.error:
+        return None
 
 
 def pe_info(data: bytes) -> PeInfo | None:
@@ -571,6 +600,7 @@ class Item:
     size: int
     open: Callable[[], object] | None = None       # a stream
     data: bytes | None = None                      # or the bytes themselves
+    always: bool = False                           # changed on the way: send even at the same size
 
 
 @dataclass
@@ -650,7 +680,16 @@ class Sender:
         dirs.add(folder)
         for key, size in self.source.files.items():
             target = f"{folder}/{key}"
-            items[target] = Item(target, size, open=lambda key=key: self.source.open(key))
+            data = None
+            if key.lower().endswith((".exe", ".dll")) and size <= UNSHARE_LIMIT:
+                header = self.source.read(key, 4096)
+                if unshared(header) is not None:
+                    data = unshared(self.source.read(key))
+            if data is not None:
+                self.say(f"{key}: made its shared sections private (the console can't map them)")
+                items[target] = Item(target, len(data), data=data, always=True)
+            else:
+                items[target] = Item(target, size, open=lambda key=key: self.source.open(key))
         for key, data in self.dxvk.items():
             items[key] = Item(key, len(data), data=data)
         if self.cpu_dll is not None:
@@ -714,7 +753,7 @@ class Sender:
                 self.check_cancel()
                 self.progress.current = item.key
                 # What this PC already sent at this size is there.
-                if state.get(item.key) == item.size:
+                if state.get(item.key) == item.size and not item.always:
                     self.progress.skipped += 1
                     self.advance(item.size)
                     continue

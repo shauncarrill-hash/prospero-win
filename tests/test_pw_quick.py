@@ -487,6 +487,28 @@ def test_logs_come_back_in_one_zip() -> None:
         assert "logs/session-2.log" in names and "profiles/profiles.lst" in names, names
 
 
+def test_shared_sections_are_made_private() -> None:
+    exe = bytearray(pe(32, ("kernel32.dll",), padding=200_000))
+    at = struct.unpack_from("<I", exe, 0x3C)[0]
+    sections, optional_size = struct.unpack_from("<H12xH", exe, at + 6)
+    assert sections >= 1
+    flags_at = at + 24 + optional_size + 36
+    struct.pack_into("<I", exe, flags_at, struct.unpack_from("<I", exe, flags_at)[0] | pw_quick.SCN_MEM_SHARED)
+    assert pw_quick.unshared(bytes(pe(32, ("kernel32.dll",)))) is None
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        make_zip(root / "Space Cadet.zip", {"Space Cadet/PINBALL.EXE": bytes(exe)})
+        make_base(root)
+        console, remote = make_console(root)
+        send(root, remote)
+        sent = (console / "data/prospero-win/prefixes/space-cadet/drive_c/Games/space-cadet/PINBALL.EXE").read_bytes()
+        assert len(sent) == len(exe)
+        assert not struct.unpack_from("<I", sent, flags_at)[0] & pw_quick.SCN_MEM_SHARED
+        remote.writes.clear()
+        send(root, remote, overwrite=True)
+        assert any(path.endswith("PINBALL.EXE") for path in remote.writes), remote.writes
+
+
 def main() -> int:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:
