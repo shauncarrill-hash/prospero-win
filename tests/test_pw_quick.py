@@ -472,6 +472,21 @@ def test_payloads_go_to_the_elf_loader_in_order() -> None:
         pass
 
 
+def test_logs_come_back_in_one_zip() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        console, remote = make_console(root)
+        logs = console / "data/prospero-win/logs"
+        logs.mkdir(parents=True)
+        for index in range(3):
+            (logs / f"session-{index}.log").write_text(f"run {index}\n")
+        (logs / "next.txt").write_text("2\n")
+        out, newest = pw_quick.fetch_logs(remote, root / "out", "now")
+        assert newest == "session-1.log"
+        names = zipfile.ZipFile(out).namelist()
+        assert "logs/session-2.log" in names and "profiles/profiles.lst" in names, names
+
+
 def main() -> int:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

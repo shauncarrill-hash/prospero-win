@@ -15,8 +15,10 @@ import ftplib
 import json
 import os
 import queue
+import subprocess
 import sys
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -25,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pw_quick  # noqa: E402
 from pw_quick import QuickError  # noqa: E402
 
-VERSION = "4.8"
+VERSION = "4.9"
 TITLE = f"prospero-win sender v{VERSION}: send a game to your PS5"
 SETTINGS = pw_quick.STATE_DIR / "settings.json"
 BASE_NAME = "prospero-base-prefix.zip"
@@ -124,11 +126,13 @@ class App:
         ps5.grid(sticky="ew", pady=(0, 10))
         ps5.columnconfigure(1, weight=1)
         ttk.Label(ps5, text="IP address").grid(row=0, column=0, sticky="w")
-        ttk.Entry(ps5, textvariable=self.host, width=18).grid(row=0, column=1, sticky="w", padx=8)
+        ttk.Entry(ps5, textvariable=self.host, width=15).grid(row=0, column=1, sticky="w", padx=8)
         ttk.Label(ps5, text="FTP port").grid(row=0, column=2, sticky="e")
         ttk.Entry(ps5, textvariable=self.port, width=7).grid(row=0, column=3, sticky="w", padx=8)
         self.check_button = ttk.Button(ps5, text="Check", command=self.check_console)
         self.check_button.grid(row=0, column=4)
+        self.logs_button = ttk.Button(ps5, text="Get logs", command=self.get_logs)
+        self.logs_button.grid(row=0, column=5, padx=(6, 0))
 
         loader = ttk.LabelFrame(outer, text="Payloads", padding=10)
         loader.grid(sticky="ew", pady=(0, 10))
@@ -227,7 +231,8 @@ class App:
             widget.configure(state="readonly" if state == "normal" and choice_only else state)
 
     def busy(self, on: bool) -> None:
-        for button in (self.zip_button, self.folder_button, self.app_button, self.check_button):
+        for button in (self.zip_button, self.folder_button, self.app_button, self.check_button,
+                       self.logs_button):
             button.configure(state="disabled" if on else "normal")
         self.send_button.configure(state="disabled" if on or not self.exes else "normal")
         self.cancel_button.configure(state="normal" if on else "disabled")
@@ -567,6 +572,33 @@ class App:
             else:
                 self.status.set("Connected, but the prospero-win app isn't installed on this PS5 yet. "
                                 "Use \"Install or update the app…\" with the release zip.")
+        self.run(work, done)
+
+    def get_logs(self) -> None:
+        try:
+            host, port = self.address()
+        except QuickError as error:
+            messagebox.showerror("prospero-win", str(error), parent=self.root)
+            return
+        self.remember()
+        self.status.set(f"Getting the logs from {host}:{port}…")
+        stamp = time.strftime("%Y-%m-%d-%H%M%S")
+
+        def work(report):
+            remote = pw_quick.connect(host, port)
+            try:
+                return pw_quick.fetch_logs(remote, here() / "logs", stamp)
+            finally:
+                remote.close()
+
+        def done(result) -> None:
+            out, newest = result
+            self.status.set(f"Saved {out}" + (f" (the newest run is {newest})" if newest else "") + ".")
+            try:
+                if sys.platform == "win32":
+                    subprocess.Popen(["explorer", "/select,", str(out)])
+            except OSError:
+                pass
         self.run(work, done)
 
     def install_app(self) -> None:

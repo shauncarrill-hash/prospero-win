@@ -19,6 +19,13 @@ that need registry entries an installer writes, still go through a recipe
   prefix](#making-the-base-prefix)).
 - The game, as a folder or a zip.
 
+## Getting the logs
+
+**Get logs** (next to **Check**) copies the app's logs
+(`/data/prospero-win/logs`) and the games' profiles from the PS5 into one
+zip in a `logs` folder beside the sender, and says which session log is the
+newest run.
+
 ## Sending payloads
 
 The **Payloads** box sends `.elf` and `.bin` payloads (an FTP server,

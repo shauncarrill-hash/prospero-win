@@ -903,6 +903,32 @@ class Remote(FtpRemote):
             return False
 
 
+def fetch_logs(remote, folder: Path | str, stamp: str) -> tuple[Path, str]:
+    """Copies the app's logs and the games' profiles from the console into
+    one zip in folder. Returns the zip and the newest session log's name."""
+    logs, profiles = f"{REMOTE_ROOT}/logs", f"{REMOTE_ROOT}/profiles"
+    if not remote.exists(logs):
+        raise QuickError(f"the PS5 has no {logs} yet: start the prospero-win app once first")
+    newest = ""
+    try:
+        last = (int(remote.read(f"{logs}/next.txt").decode().strip() or 0) - 1) % 8
+        newest = f"session-{last}.log"
+    except (OSError, EOFError, ValueError, ftplib.Error):
+        pass
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    out = folder / f"prospero-win-logs-{stamp}.zip"
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
+        for directory, name_ok in ((logs, lambda name: name.endswith((".log", ".txt"))),
+                                   (profiles, lambda name: name.endswith((".profile", ".lst")))):
+            if not remote.exists(directory):
+                continue
+            for name, (kind, _) in sorted(remote.listdir(directory).items()):
+                if kind == "file" and name_ok(name):
+                    archive.writestr(f"{posixpath.basename(directory)}/{name}", remote.read(f"{directory}/{name}"))
+    return out, newest
+
+
 # The ELF loader (ps5-payload-dev elfldr) runs what is sent to this port.
 ELF_PORT = 9021
 PAYLOAD_GAP = 2.0
