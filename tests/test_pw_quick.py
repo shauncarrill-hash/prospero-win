@@ -540,6 +540,15 @@ def test_net_framework_game_gets_wine_mono_once() -> None:
                         mono=pw_quick.Source(mono_zip)).send(overwrite=True)
         assert not any("/shared/" in path for path in remote.writes), remote.writes
 
+        # A settings-only send of a game sent before Wine Mono existed adds it too.
+        shutil.rmtree(shared)
+        prefix_user = console / "data/prospero-win/prefixes/farm/user.reg"
+        prefix_user.write_text(user.replace("RuntimePath", "Other"))
+        pw_quick.Sender(remote, game, source, base, state_dir=root / "state",
+                        mono=pw_quick.Source(mono_zip)).update_settings()
+        assert (shared / pw_quick.MONO_MARKER).is_file()
+        assert '"RuntimePath"=' in prefix_user.read_text()
+
 
 def main() -> int:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]

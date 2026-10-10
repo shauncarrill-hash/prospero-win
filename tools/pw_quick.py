@@ -796,10 +796,19 @@ class Sender:
     def update_settings(self) -> None:
         """Rewrites only the game's profile (program, graphics, arguments,
         resolution, preset), plus DXVK's DLLs if it now needs them and the
-        console lacks them. The game's files, its registry and its saves
-        stay as they are."""
+        console lacks them, and Wine Mono with the registry value pointing at
+        it for a .NET Framework game. The game's files and saves stay as
+        they are."""
         if not self.remote.exists(self.remote_prefix):
             raise QuickError(f"{self.game.slug} is not on the console yet: send it first")
+        if self.mono is not None:
+            self.put_mono()
+            path = f"{self.remote_prefix}/user.reg"
+            user = self.remote.read(path)
+            runtime = "Z:" + self.remote_mono.replace("/", "\\")
+            changed = set_values(user, MONO_KEY, {"RuntimePath": runtime})
+            if changed != user:
+                self.retrying(lambda: self.remote.write(path, changed))
         for item in (Item(key, len(data), data=data) for key, data in sorted(self.dxvk.items())):
             if self.remote.size(f"{self.remote_prefix}/{item.key}") != item.size:
                 self.say(f"sending {item.key}")
