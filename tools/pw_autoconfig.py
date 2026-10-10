@@ -326,7 +326,7 @@ def plan(source, exe, imports: set[str], graphics: str) -> Plan:
             result.environment["FNA3D_FORCE_DRIVER"] = "D3D11"
             result.ok("XNA through Wine Mono's FNA, drawing with Direct3D 11 through DXVK")
         result.warn("needs .NET Framework 4: it runs on Wine Mono instead, which the sender puts on the "
-                    "PS5 once (about 125 MB). New: not yet confirmed on the console")
+                    "PS5 once (about 170 MB). New: not yet confirmed on the console")
     elif files.find(r"\.runtimeconfig\.json$") and not files.has("hostfxr.dll"):
         result.stop("it needs an installed .NET runtime; only self-contained .NET games run")
 

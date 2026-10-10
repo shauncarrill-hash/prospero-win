@@ -5,7 +5,8 @@
 # Mono, Wine's .NET Framework 4 stand-in (with FNA for XNA games), as the
 # app's Wine asks for it (dlls/appwiz.cpl/addons.c MONO_VERSION). The
 # release is trimmed of what only compiling needs (the *-api reference
-# assemblies, msbuild, xbuild): 228 MB and 2790 files down to 125 MB and 445.
+# assemblies, msbuild, xbuild): 228 MB and 2790 files down to 170 MB and 567
+# (its links become copies: the console keeps no links).
 # The sender puts it on the console once, in /data/prospero-win/shared.
 #
 # Usage: tools/build_mono.sh --out DIR [--version 11.3.0]
