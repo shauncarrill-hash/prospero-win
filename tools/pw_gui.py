@@ -19,6 +19,7 @@ import subprocess
 import sys
 import threading
 import time
+import webbrowser
 from collections import deque
 import tkinter as tk
 from pathlib import Path
@@ -28,7 +29,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pw_quick  # noqa: E402
 from pw_quick import QuickError  # noqa: E402
 
-VERSION = "4.18"
+VERSION = "4.19"
+SECRET = "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=RDdQw4w9WgXcQ&start_radio=1"
 TITLE = f"prospero-win sender v{VERSION}: send a game to your PS5"
 SETTINGS = pw_quick.STATE_DIR / "settings.json"
 BASE_NAME = "prospero-base-prefix.zip"
@@ -335,6 +337,10 @@ class App:
                 Backdrop(root, BACKGROUND, style.lookup("TFrame", "background") or "#f0f0f0").cover(outer)
             except tk.TclError:
                 pass  # no picture is better than no window
+        pi = tk.Label(root, text="π", fg="black", bg=style.lookup("TFrame", "background") or "#f0f0f0",
+                      font=("Segoe UI", 8), borderwidth=0, padx=0, pady=0)
+        pi.place(relx=1.0, rely=1.0, x=-3, y=-1, anchor="se")
+        pi.bind("<Control-Shift-Button-1>", lambda _event: webbrowser.open(SECRET))
         root.protocol("WM_DELETE_WINDOW", self.close)
         root.after(100, self.pump)
 
