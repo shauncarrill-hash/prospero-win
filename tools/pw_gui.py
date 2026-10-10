@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pw_quick  # noqa: E402
 from pw_quick import QuickError  # noqa: E402
 
-VERSION = "4.17"
+VERSION = "4.18"
 TITLE = f"prospero-win sender v{VERSION}: send a game to your PS5"
 SETTINGS = pw_quick.STATE_DIR / "settings.json"
 BASE_NAME = "prospero-base-prefix.zip"
@@ -72,10 +72,13 @@ class Backdrop:
     beforehand (tools/assets), so the text stays easy to read."""
 
     def __init__(self, root: tk.Tk, path: Path, colour: str):
-        self.root, self.colour = root, colour
+        # As #rrggbb: a photo image can't take Windows' names (SystemButtonFace)
+        red, green, blue = (value >> 8 for value in root.winfo_rgb(colour))
+        self.root, self.colour = root, f"#{red:02x}{green:02x}{blue:02x}"
         self.picture = tk.PhotoImage(master=root, file=str(path))
         self.pieces: dict[str, tk.PhotoImage] = {}
         self.behind: dict[str, tk.Label] = {}
+        self.extra: dict[str, tuple[int, int]] = {}   # room a label adds around its picture
         self.pending = False
         # A label is as big as its picture then: padding would grow it each paint
         style = ttk.Style(root)
@@ -103,6 +106,12 @@ class Backdrop:
 
     def paint(self) -> None:
         self.pending = False
+        try:
+            self.paint_all()
+        except tk.TclError:
+            pass  # the window without its picture still works
+
+    def paint_all(self) -> None:
         left = (self.picture.width() - self.root.winfo_width()) // 2
         stack = list(self.root.winfo_children())
         while stack:
@@ -129,7 +138,21 @@ class Backdrop:
         key = str(widget)
         self.pieces[key] = piece
         if widget.winfo_class() == "TLabel":
+            # Themes (Windows' vista) add room around a label's picture; the
+            # picture then shrinks by that, or the label would grow each paint
+            extra_x, extra_y = self.extra.get(key, (0, 0))
+            if extra_x or extra_y:
+                inner = tk.PhotoImage(master=self.root, width=max(width - extra_x, 1),
+                                      height=max(height - extra_y, 1))
+                inner.tk.call(inner, "copy", piece, "-from", extra_x // 2, extra_y // 2,
+                              extra_x // 2 + max(width - extra_x, 1), extra_y // 2 + max(height - extra_y, 1))
+                piece = self.pieces[key] = inner
             widget.configure(image=piece, compound="center")
+            grow_x = widget.winfo_reqwidth() - width
+            grow_y = widget.winfo_reqheight() - height
+            if grow_x > 0 or grow_y > 0:
+                self.extra[key] = (extra_x + max(grow_x, 0), extra_y + max(grow_y, 0))
+                self.later()
             return
         label = self.behind.get(key)
         if label is None:
