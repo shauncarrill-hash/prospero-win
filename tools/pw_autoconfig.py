@@ -316,6 +316,12 @@ def plan(source, exe, imports: set[str], graphics: str) -> Plan:
 
     # .NET
     xna = files.find(r"(^|/)microsoft\.xna\.framework[^/]*\.dll$")
+    if not xna and "mscoree.dll" in exe_imports:
+        # XNA itself is usually installed, not shipped: the exe names it
+        try:
+            xna = b"Microsoft.Xna.Framework" in source.read(exe.key, 32 << 20)
+        except (OSError, KeyError, AttributeError):
+            pass
     if files.has("coreclr.dll"):
         result.ok(".NET runtime bundled: its memory use is capped to what the console grants")
     elif "mscoree.dll" in exe_imports or xna:

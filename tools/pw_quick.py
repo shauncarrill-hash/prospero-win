@@ -303,7 +303,10 @@ class Executable:
 
 def find_executables(source: Source, name: str = "") -> list[Executable]:
     """The source's Windows programs, likeliest to be the game first."""
-    wanted = re.sub(r"[^a-z0-9]", "", name.lower())
+    words = re.findall(r"[a-z0-9]+", name.lower())
+    # "Hades II" is Hades2.exe: the name with its Roman numerals as digits too
+    roman = {"ii": "2", "iii": "3", "iv": "4", "v": "5", "vi": "6", "vii": "7", "viii": "8", "ix": "9"}
+    names = {"".join(words), "".join(roman.get(word, word) for word in words)} - {""}
     found = []
     for key, size in source.files.items():
         if not key.lower().endswith(".exe") or size < 1024:
@@ -318,8 +321,10 @@ def find_executables(source: Source, name: str = "") -> list[Executable]:
             score -= 200
         if not info.gui:
             score -= 50
-        if wanted and stem and (stem in wanted or wanted in stem):
+        if stem and any(stem in wanted or wanted in stem for wanted in names):
             score += 100
+        if info.bits == 64:
+            score += 10                                   # a game's 32-bit helpers sit beside it
         found.append(Executable(key, size, info, score))
     return sorted(found, key=lambda exe: (-exe.score, exe.key))
 

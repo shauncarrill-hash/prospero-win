@@ -550,6 +550,16 @@ def test_net_framework_game_gets_wine_mono_once() -> None:
         assert '"RuntimePath"=' in prefix_user.read_text()
 
 
+def test_roman_numerals_find_the_game() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        make_zip(root / "Hades II.zip", {
+            "Hades II/Ship/Hades2.exe": pe(64, ("kernel32.dll", "d3d11.dll"), padding=3_000_000),
+            "Hades II/Ship/F10.exe": pe(32, ("mscoree.dll",), padding=4_000_000)})
+        game, _ = pw_quick.suggest(pw_quick.Source(root / "Hades II.zip"))
+        assert game.exe == "Ship/Hades2.exe", game.exe
+
+
 def main() -> int:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

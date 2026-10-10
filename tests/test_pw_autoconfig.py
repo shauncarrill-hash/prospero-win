@@ -86,6 +86,11 @@ def test_xna_runs_on_wine_mono() -> None:
     assert game.mono and game.graphics == "dxvk"
 
 
+def test_xna_named_by_the_exe() -> None:
+    game = suggest({"S/S.exe": pe(32, ("mscoree.dll",), padding=100_000) + b"Microsoft.Xna.Framework.Game"})
+    assert game.engine == "XNA" and game.graphics == "dxvk", (game.engine, game.graphics)
+
+
 def test_direct3d12_only_is_stopped() -> None:
     game = suggest({"D/D.exe": pe(64, ("d3d12.dll", "kernel32.dll"), padding=100_000)})
     assert "stop" in levels(game) and "Direct3D 12" in text(game), text(game)
