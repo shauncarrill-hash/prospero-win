@@ -159,3 +159,12 @@ prefix with stand-in fonts (Liberation, IPAGothic), LAV Filters, which
 DirectShow video needs, and the Media Foundation decoders from
 `tools/build_media.sh`; the sender writes the font replacements into each game's
 `user.reg`.
+
+## Registry entries (.reg files)
+
+A game that wants something in the registry, like a CD key, can carry it as
+a `.reg` file exported with Windows' regedit. Put the file anywhere in the
+game's folder or zip: the sender puts its keys in the game's own registry
+(HKLM and HKCR in system.reg, HKCU in user.reg), on a full send and on a
+settings-only send. For a 32-bit game, keys exported straight under
+HKLM\Software also go under Wow6432Node, where a 32-bit program looks.

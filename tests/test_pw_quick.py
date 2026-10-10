@@ -678,3 +678,23 @@ def test_preset_goes_to_the_console() -> None:
         game.preset = "mouse"
         pw_quick.Sender(remote, game, source, base, state_dir=root / "state").send()
         assert "mouse = left_stick" in (console / "data/prospero-win/input/mouse.input").read_text()
+
+
+def test_reg_files_go_into_the_registry():
+    exported = ('Windows Registry Editor Version 5.00\r\n\r\n'
+                '[HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Microsoft Games\\Age of Empires 3\\1.0]\r\n'
+                '"PID"="12345-Ü"\r\n"Version"=dword:0000000a\r\n'
+                '"Blob"=hex:01,02,\\\r\n  03\r\n\r\n'
+                '[HKEY_CURRENT_USER\\Software\\Game]\r\n@="x"\r\n').encode("utf-16")
+    entries = pw_quick.parse_reg(exported)
+    system = b"WINE REGISTRY Version 2\n\n[Software\\\\Microsoft\\\\Microsoft Games\\\\Age of Empires 3\\\\1.0] 1\n\"PID\"=\"old\"\n"
+    merged = pw_quick.apply_reg(system, "system.reg", entries, bits=32).decode()
+    assert merged.count('"PID"') == 2  # once in place, once under Wow6432Node
+    assert '"PID"="12345-\\x00dc"' in merged and '"old"' not in merged
+    assert '"Blob"=hex:01,02,03' in merged and '"Version"=dword:0000000a' in merged
+    assert "[Software\\\\Wow6432Node\\\\Microsoft\\\\Microsoft Games\\\\Age of Empires 3\\\\1.0]" in merged
+    user = pw_quick.apply_reg(b"WINE REGISTRY Version 2\n", "user.reg", entries).decode()
+    assert '[Software\\\\Game]' in user and '@="x"' in user
+    gone = pw_quick.apply_reg(merged.encode(), "system.reg",
+                              pw_quick.parse_reg(b"[-HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Microsoft Games]"))
+    assert b"Age of Empires" not in gone.split(b"Wow6432Node")[0]

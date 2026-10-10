@@ -572,6 +572,146 @@ def set_values(user_reg: bytes, key: str, values: dict[str, str]) -> bytes:
     return "\n".join(lines).encode("utf-8", "surrogateescape")
 
 
+
+# .reg files the game folder carries (a CD key exported from the PC's
+# registry, say) go into the game's own registry: HKLM and HKCR into
+# system.reg, HKCU into user.reg. Windows' .reg format and Wine's are
+# nearly the same; only the key headers and non-ASCII text differ.
+REG_LIMIT = 4 * 1024 * 1024
+REG_HIVES = {
+    "hkey_local_machine": ("system.reg", ""), "hklm": ("system.reg", ""),
+    "hkey_classes_root": ("system.reg", "Software\\Classes"), "hkcr": ("system.reg", "Software\\Classes"),
+    "hkey_current_user": ("user.reg", ""), "hkcu": ("user.reg", ""),
+    "hkey_users\\.default": ("user.reg", ""),
+}
+
+
+def reg_text(data: bytes) -> str:
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return data.decode("utf-16")
+    if data.startswith(b"\xef\xbb\xbf"):
+        return data[3:].decode("utf-8", "replace")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode("cp1252", "replace")
+
+
+def reg_name(line: str) -> str | None:
+    """The value name a .reg line sets, lower-cased, '@' for the default."""
+    if line.startswith("@"):
+        return "@"
+    if not line.startswith('"'):
+        return None
+    i, out = 1, []
+    while i < len(line):
+        ch = line[i]
+        if ch == "\\" and i + 1 < len(line):
+            out.append(line[i + 1])
+            i += 2
+            continue
+        if ch == '"':
+            return "".join(out).lower()
+        out.append(ch)
+        i += 1
+    return None
+
+
+def ascii_reg(line: str) -> str:
+    return "".join(ch if ord(ch) < 0x80 else f"\\x{ord(ch):04x}" for ch in line)
+
+
+def parse_reg(data: bytes) -> list[tuple[str, str, list[str] | None]]:
+    """(registry file, key, value lines or None to delete the key) for each
+    key a .reg file names, in order. Keys outside the hives above are left out."""
+    lines, joined = reg_text(data).replace("\r\n", "\n").replace("\r", "\n").split("\n"), []
+    for line in lines:
+        if joined and joined[-1].endswith("\\") and not joined[-1].lstrip().startswith("["):
+            joined[-1] = joined[-1][:-1] + line.strip()
+        else:
+            joined.append(line.strip())
+    out: list[tuple[str, str, list[str] | None]] = []
+    current = None
+    for line in joined:
+        if line.startswith("[") and line.endswith("]"):
+            current = None
+            path, delete = line[1:-1], False
+            if path.startswith("-"):
+                path, delete = path[1:], True
+            lower = path.lower()
+            for hive, (file, prefix) in sorted(REG_HIVES.items(), key=lambda item: -len(item[0])):
+                if lower == hive or lower.startswith(hive + "\\"):
+                    rest = path[len(hive) + 1:]
+                    key = "\\".join(part for part in (prefix, rest) if part)
+                    if key:
+                        current = (file, key, None if delete else [])
+                        out.append(current)
+                    break
+            continue
+        if current is not None and current[2] is not None and reg_name(line) is not None and "=" in line:
+            current[2].append(ascii_reg(line))
+    return out
+
+
+def wine_header(key: str) -> str:
+    return "[" + key.replace("\\", "\\\\") + "]"
+
+
+def merge_reg(registry: bytes, key: str, values: list[str] | None) -> bytes:
+    """A Wine registry file with these .reg value lines in key, made if
+    missing; a value line ending '=-' removes the value, and values None
+    removes the key with everything under it."""
+    header = wine_header(key).lower()
+    lines = registry.decode("utf-8", "surrogateescape").split("\n")
+
+    def sections(match):
+        found, i = [], 0
+        while i < len(lines):
+            if lines[i].startswith("[") and match(lines[i].lower().split("]", 1)[0] + "]"):
+                end = next((j for j in range(i + 1, len(lines)) if lines[j].startswith("[")), len(lines))
+                found.append((i, end))
+                i = end
+            else:
+                i += 1
+        return found
+
+    if values is None:
+        below = header[:-1] + "\\\\"
+        for start, end in reversed(sections(lambda h: h == header or h.startswith(below))):
+            del lines[start:end]
+        return "\n".join(lines).encode("utf-8", "surrogateescape")
+    found = sections(lambda h: h == header)
+    if not found:
+        if lines and lines[-1] == "":
+            lines.pop()
+        lines += ["", f"{wine_header(key)} {int(time.time())}", ""]
+        start, end = len(lines) - 2, len(lines)
+    else:
+        start, end = found[0]
+    body = [line for line in lines[start + 1:end] if line != ""]
+    for line in values:
+        name = reg_name(line)
+        body = [old for old in body if reg_name(old) != name]
+        if not line.endswith("=-"):
+            body.append(line)
+    lines[start + 1:end] = body + [""]
+    return "\n".join(lines).encode("utf-8", "surrogateescape")
+
+
+def apply_reg(registry: bytes, file: str, entries, bits: int = 64) -> bytes:
+    """registry (system.reg or user.reg) with the parse_reg entries for it.
+    A 32-bit game reads HKLM\\Software through Wow6432Node, so what a .reg
+    file puts straight in HKLM\\Software is put there as well."""
+    for target, key, values in entries:
+        if target != file:
+            continue
+        registry = merge_reg(registry, key, values)
+        lower = key.lower()
+        if (bits == 32 and file == "system.reg" and lower.startswith("software\\")
+                and not lower.startswith(("software\\wow6432node", "software\\classes"))):
+            registry = merge_reg(registry, "Software\\Wow6432Node\\" + key[len("software\\"):], values)
+    return registry
+
 # Fonts the console lacks (ProbeTris locale.fonts.missing), drawn with the
 # metric-compatible ones tools/pw_base_prefix.py --fonts adds, through
 # Wine's HKCU\Software\Wine\Fonts\Replacements.
@@ -711,6 +851,7 @@ class Sender:
         for key, size in self.base.files.items():
             if key in REGISTRY:
                 data = self.base.read(key)
+                data = apply_reg(data, key, self.reg_entries(), self.game.bits)
                 if key == "user.reg":
                     data = set_environment(data, self.game.environment)
                     data = set_values(data, FONT_KEY, font_replacements(self.base))
@@ -749,6 +890,23 @@ class Sender:
                 dirs.add(parent)
                 parent = posixpath.dirname(parent)
         return sorted(items.values(), key=lambda item: item.key), dirs
+
+    def reg_entries(self) -> list:
+        """What the .reg files in the game's folder put in the registry."""
+        entries = getattr(self, "_reg_entries", None)
+        if entries is None:
+            entries = []
+            for key, size in sorted(self.source.files.items()):
+                if key.lower().endswith(".reg") and size <= REG_LIMIT:
+                    try:
+                        found = parse_reg(self.source.read(key))
+                    except (OSError, KeyError, UnicodeError):
+                        continue
+                    if found:
+                        self.say(f"{key}: put in the game's registry")
+                        entries += found
+            self._reg_entries = entries
+        return entries
 
     def stand_ins(self) -> dict[str, bytes]:
         """STUB_ASSEMBLIES the game's exe names and its folder lacks, by the
@@ -872,12 +1030,20 @@ class Sender:
                 self.put_mono()
             finally:
                 self.close_spares()
-            path = f"{self.remote_prefix}/user.reg"
-            user = self.remote.read(path)
-            runtime = "Z:" + self.remote_mono.replace("/", "\\")
-            changed = set_values(user, MONO_KEY, {"RuntimePath": runtime})
-            if changed != user:
-                self.retrying(lambda: self.remote.write(path, changed))
+        for name in ("system.reg", "user.reg"):
+            entries = [entry for entry in self.reg_entries() if entry[0] == name]
+            if name == "system.reg" and not entries:
+                continue
+            if name == "user.reg" and not entries and self.mono is None:
+                continue
+            path = f"{self.remote_prefix}/{name}"
+            registry = self.remote.read(path)
+            changed = apply_reg(registry, name, entries, self.game.bits)
+            if name == "user.reg" and self.mono is not None:
+                runtime = "Z:" + self.remote_mono.replace("/", "\\")
+                changed = set_values(changed, MONO_KEY, {"RuntimePath": runtime})
+            if changed != registry:
+                self.retrying(lambda path=path, changed=changed: self.remote.write(path, changed))
         for item in (Item(key, len(data), data=data)
                      for key, data in sorted({**self.stand_ins(), **self.dxvk}.items())):
             if self.remote.size(f"{self.remote_prefix}/{item.key}") != item.size:
