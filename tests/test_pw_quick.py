@@ -550,6 +550,27 @@ def test_net_framework_game_gets_wine_mono_once() -> None:
         assert '"RuntimePath"=' in prefix_user.read_text()
 
 
+def test_store_build_gets_the_steamworks_it_names() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        exe = pe(32, ("mscoree.dll",), padding=1000) + b"\0Steamworks.NET\0"
+        make_zip(root / "Farm.zip", {"Farm/Farm.exe": exe, "Farm/xTile.dll": b"t" * 10})
+        make_zip(root / "Steam.zip", {"Farm/Farm.exe": exe, "Farm/Steamworks.NET.dll": b"s" * 10})
+        mono_zip = make_zip(root / f"{pw_quick.MONO_NAME}.zip",
+                            {f"{pw_quick.MONO_NAME}/bin/libmono-2.0-x86.dll": b"m" * 50})
+        make_base(root)
+        console, remote = make_console(root)
+        stub = (pw_quick.STUBS / "Steamworks.NET.dll").read_bytes()
+        for name, slug, expected in (("Farm.zip", "gog", stub), ("Steam.zip", "steam", b"s" * 10)):
+            source, base = pw_quick.Source(root / name), pw_quick.Source(root / "base.zip")
+            game, _ = pw_quick.suggest(source)
+            game.slug = slug
+            pw_quick.Sender(remote, game, source, base, state_dir=root / "state",
+                            mono=pw_quick.Source(mono_zip)).send()
+            dll = console / f"data/prospero-win/prefixes/{slug}/drive_c/Games/{slug}/Steamworks.NET.dll"
+            assert dll.read_bytes() == expected, (name, dll.stat().st_size)
+
+
 def test_roman_numerals_find_the_game() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

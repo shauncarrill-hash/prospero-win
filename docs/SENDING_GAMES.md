@@ -27,6 +27,14 @@ run on Wine Mono instead: `wine-mono-11.3.0.zip` next to the sender
 `/data/prospero-win/shared`, and each such game's prefix points at it. XNA
 games go through Wine Mono's FNA on Direct3D 11 (DXVK).
 
+Mono loads the type of every field of a class as soon as it compiles code
+that uses the class, where .NET waits until the code runs. So a store build
+that names an assembly it never ships still needs it on Mono: Stardew
+Valley from GOG names Steamworks.NET in a class it never uses, and quit with
+a `TypeLoadException`. The sender copies a stand-in
+(`tools/stubs/Steamworks.NET.dll`, made by `tools/build_steamworks.sh`) beside
+the game's exe when the exe names Steamworks.NET and the folder lacks it.
+
 ## Getting the logs
 
 **Get logs** (next to **Check**) copies the app's logs

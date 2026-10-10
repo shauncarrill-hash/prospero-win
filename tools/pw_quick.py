@@ -89,6 +89,14 @@ NOT_THE_GAME = re.compile(
 D3D = re.compile(r"^(d3d8|d3d9|d3d10(_1)?(core)?|d3d11|dxgi)\.dll$")
 SCAN_DLLS, SCAN_LIMIT = 400, 96 << 20
 PRESETS = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "presets"
+# Assemblies a .NET Framework game names but a store build leaves out, which
+# Wine Mono needs anyway: Mono loads the types of every field of a class it
+# compiles, where .NET waits until the code runs. Stardew Valley from GOG
+# names Steamworks.NET 7 in a class it never uses, and died on Mono without
+# it. tools/build_steamworks.sh makes the stand-in (MIT, as Steamworks.NET),
+# whose SteamAPI.Init answers false without Steam.
+STUBS = PRESETS.parent / "stubs"
+STUB_ASSEMBLIES = ("Steamworks.NET",)
 STATE_DIR = Path(os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_STATE_HOME")
                  or Path.home() / ".local" / "state") / "prospero-win" / "quick"
 
@@ -716,6 +724,9 @@ class Sender:
                 items[target] = Item(target, len(data), data=data, always=True)
             else:
                 items[target] = Item(target, size, open=lambda key=key: self.source.open(key))
+        for key, data in self.stand_ins().items():
+            self.say(f"{posixpath.basename(key)}: a stand-in, because the game names it and doesn't ship it")
+            items[key] = Item(key, len(data), data=data)
         for key, data in self.dxvk.items():
             items[key] = Item(key, len(data), data=data)
         if self.cpu_dll is not None:
@@ -726,6 +737,25 @@ class Sender:
                 dirs.add(parent)
                 parent = posixpath.dirname(parent)
         return sorted(items.values(), key=lambda item: item.key), dirs
+
+    def stand_ins(self) -> dict[str, bytes]:
+        """STUB_ASSEMBLIES the game's exe names and its folder lacks, by the
+        prefix path each goes to, beside the exe."""
+        if self.mono is None:
+            return {}
+        try:
+            exe = self.source.read(self.game.exe, SCAN_LIMIT)
+        except (OSError, KeyError):
+            return {}
+        here = posixpath.dirname(self.game.exe)
+        present = {key.lower() for key in self.source.files}
+        found = {}
+        for name in STUB_ASSEMBLIES:
+            dll = posixpath.join(here, f"{name}.dll")
+            stub = STUBS / f"{name}.dll"
+            if b"\0" + name.encode() + b"\0" in exe and dll.lower() not in present and stub.is_file():
+                found[f"{self.game.folder}/{dll}"] = stub.read_bytes()
+        return found
 
     def load_state(self) -> tuple[dict[str, int] | None, bool]:
         """The files this PC sent the console, and whether that send finished."""
@@ -814,7 +844,8 @@ class Sender:
             changed = set_values(user, MONO_KEY, {"RuntimePath": runtime})
             if changed != user:
                 self.retrying(lambda: self.remote.write(path, changed))
-        for item in (Item(key, len(data), data=data) for key, data in sorted(self.dxvk.items())):
+        for item in (Item(key, len(data), data=data)
+                     for key, data in sorted({**self.stand_ins(), **self.dxvk}.items())):
             if self.remote.size(f"{self.remote_prefix}/{item.key}") != item.size:
                 self.say(f"sending {item.key}")
                 self.put(item)

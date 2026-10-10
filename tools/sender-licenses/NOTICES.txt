@@ -6,9 +6,14 @@ prospero-win-sender.exe
   https://github.com/mpereiraesaa/prospero-win
   This build's source, with the sender and the media DLLs' build scripts:
   https://github.com/shauncarrill-hash/prospero-win/tree/sender-gui
-  (commit cba6ce0a4c84eefe02c31533bec57eeafe5d5674)
+  (commit 15c553b87eb6705bd54741b11e2acc28e8aaf214)
   Packed with PyInstaller; contains Python 3 (Python-PSF.txt) and Tcl/Tk
   (Tcl-Tk.txt).
+  Also inside: Steamworks.NET 7.0.0 by Riley Labrecque (MIT,
+  Steamworks.NET-MIT.txt), built by tools/build_steamworks.sh with one change
+  (SteamAPI.Init answers false without Steam). It is copied only into games
+  that name it and don't ship it. No Valve files are included.
+  Source: https://github.com/rlabrecque/Steamworks.NET (tag 7.0.0).
 
 prospero-base-prefix.zip
   Wine prefix made by Wine 11.17 (LGPL-2.1-or-later, LGPL-2.1.txt).
@@ -31,6 +36,12 @@ prospero-base-prefix.zip
     Liberation fonts 2.1.5, SIL Open Font License 1.1 (Liberation-OFL-1.1.txt).
   windows/Fonts/ipag.ttf
     IPAGothic 003.03, IPA Font License v1.0 (IPAGothic-IPA-Font-License.txt).
+
+wine-mono-11.3.0.zip
+  Wine Mono 11.3.0 (Mono, FNA, FAudio, FNA3D, SDL3, winforms, wpf and more),
+  unmodified release with build-only files removed by tools/build_mono.sh.
+  MIT, LGPL, MS-PL and zlib licenses (Wine-Mono-COPYING.txt).
+  Source: https://github.com/madewokherd/wine-mono (tag wine-mono-11.3.0).
 
 DXVK is downloaded from its GitHub release when a game needs it, not shipped
 here.
