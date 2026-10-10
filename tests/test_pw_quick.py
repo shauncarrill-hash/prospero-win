@@ -712,3 +712,12 @@ def test_direct3d12_game_gets_the_proxy_beside_its_exe(tmp_path):
     assert sorted(posixpath.basename(key) for key in found) == sorted(pw_quick.D3D12_FILES)
     assert all(key.startswith("drive_c/Games/hades-ii/Ship/") for key in found), found
     assert sender.environment()["PW_FAKE_RAM_GB"] == "16"
+
+
+def test_the_exe_that_draws_beats_its_launcher(tmp_path):
+    zip_path = tmp_path / "ra2.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("RA2.exe", pe(32, ("kernel32.dll", "user32.dll", "gdi32.dll"), padding=2_000_000))
+        archive.writestr("Game.exe", pe(32, ("kernel32.dll", "ddraw.dll"), padding=1_000_000))
+    exes = pw_quick.find_executables(pw_quick.Source(zip_path), "ra2")
+    assert exes[0].key == "Game.exe", [(exe.key, exe.score) for exe in exes]

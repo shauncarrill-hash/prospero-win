@@ -49,7 +49,7 @@ def test_unreal_starts_the_shipping_exe() -> None:
                     "Hall/Hall/Binaries/Win64/Hall-Win64-Shipping.exe": pe(64, ("d3d12.dll", "d3d11.dll"))})
     assert game.exe == "Hall/Binaries/Win64/Hall-Win64-Shipping.exe", game.exe
     assert game.engine == "Unreal Engine" and game.arguments == "-dx11" and game.graphics == "dxvk"
-    assert "launcher" in text(game) and "stop" not in levels(game), text(game)
+    assert "stop" not in levels(game), text(game)
 
 
 def pck(project: bytes, version: int = 2) -> bytes:

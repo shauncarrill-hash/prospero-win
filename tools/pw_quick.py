@@ -347,6 +347,11 @@ def find_executables(source: Source, name: str = "") -> list[Executable]:
             score += 100
         if info.bits == 64:
             score += 10                                   # a game's 32-bit helpers sit beside it
+        if graphics_of(info.imports) or "d3d12.dll" in info.imports or "vulkan-1.dll" in info.imports:
+            # The console can't start a second program, so a launcher
+            # (Red Alert 2's RA2.exe before Game.exe) never gets anywhere;
+            # the exe that draws is the one to start
+            score += 120
         found.append(Executable(key, size, info, score))
     return sorted(found, key=lambda exe: (-exe.score, exe.key))
 
