@@ -345,16 +345,18 @@ def plan(source, exe, imports: set[str], graphics: str) -> Plan:
             result.warn("it can use Direct3D 12, which freezes the console: choose Direct3D 11 "
                         "in its settings if it has the choice")
         else:
-            # Wine's own dxgi and d3d12 (vkd3d) instead of DXVK's dxgi, which
-            # offers no Direct3D 12 adapter: Hades II found none with it.
-            result.graphics = "auto"
-            result.warn("it needs Direct3D 12: it gets Wine's own (vkd3d). New and not yet tried on the "
-                        "console; vkd3d-proton froze it, so if the screen stops, hold the power button")
+            # vkd3d-proton behind the sender's proxy d3d12.dll, with DXVK's
+            # dxgi: how Hades II got a device (at feature level 11_0, the
+            # PS5's maximum being 11_1) and past its RAM check
+            result.graphics = "d3d12" if getattr(getattr(exe, "info", None), "bits", 64) == 64 else "auto"
+            result.warn("it needs Direct3D 12: it gets vkd3d-proton beside it, asked for feature level 11, "
+                        "and a reported 16 GB of RAM. A game that truly needs level 12 features still fails")
     if not result.engine:
         result.ok({"dxvk": "Direct3D through DXVK, which works on the console",
                    "opengl": "OpenGL, which works on the console",
                    "auto": "DirectDraw, which works on the console",
-                   "gdi": "Windows drawing (GDI)"}[graphics])
+                   "gdi": "Windows drawing (GDI)",
+                   "d3d12": "Direct3D 12 through vkd3d-proton"}[graphics])
     if "vulkan-1.dll" in exe_imports and not result.engine:
         result.ok("Vulkan works on the console")
         if graphics == "gdi":

@@ -48,3 +48,11 @@ here.
 
 No Microsoft or Sony files and no games are included. "PS5" names the console
 the app runs on; this project is not made or endorsed by Sony.
+
+vkd3d-proton 3.0.1 (d3d12_original.dll, d3d12core.dll, sent beside Direct3D 12 games)
+  LGPL 2.1, Copyright the vkd3d and vkd3d-proton authors.
+  Source: https://github.com/HansKristian-Work/vkd3d-proton (tag v3.0.1)
+  License text: LGPL-2.1.txt.
+
+d3d12.dll proxy (sent beside Direct3D 12 games): part of the sender,
+  source in tools/d3d12_proxy of the repository above.

@@ -168,3 +168,23 @@ game's folder or zip: the sender puts its keys in the game's own registry
 (HKLM and HKCR in system.reg, HKCU in user.reg), on a full send and on a
 settings-only send. For a 32-bit game, keys exported straight under
 HKLM\Software also go under Wow6432Node, where a 32-bit program looks.
+
+## Direct3D 12 games
+
+A game that draws only with Direct3D 12 (Hades II) gets Graphics
+"Direct3D 12 (vkd3d-proton)". The sender puts three files beside its exe:
+vkd3d-proton 3.0.1 (`d3d12_original.dll`, `d3d12core.dll`) and a small proxy
+`d3d12.dll` (tools/d3d12_proxy). The profile keeps DXVK for dxgi and adds
+`d3d12,d3d12core` to the native overrides; a settings-only send keeps all of it.
+
+The proxy:
+- exports Windows' ordinals 100-117 (games import D3D12CreateDevice by
+  ordinal 101, and Wine aborts on a missing one);
+- creates the device at feature level 11_0 when a game asks for more (the
+  PS5's vkd3d-proton device tops out at 11_1); `PW_D3D12_FEATURE_LEVEL`
+  (hex) changes it, 0 passes requests on;
+- raises the RAM the game is told about to `PW_FAKE_RAM_GB` (16 by default
+  for these games; Wine reports about 546 MB on the console, below most
+  games' minimum). It adds no real memory; 0 turns it off.
+It logs to `d3d12-proxy.log` beside the exe and to the session log.
+A game that needs real feature level 12 features still fails.

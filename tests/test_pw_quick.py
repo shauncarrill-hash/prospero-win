@@ -9,6 +9,7 @@ DLLs a real game would use."""
 from __future__ import annotations
 
 import os
+import posixpath
 import shutil
 import struct
 import sys
@@ -698,3 +699,16 @@ def test_reg_files_go_into_the_registry():
     gone = pw_quick.apply_reg(merged.encode(), "system.reg",
                               pw_quick.parse_reg(b"[-HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Microsoft Games]"))
     assert b"Age of Empires" not in gone.split(b"Wow6432Node")[0]
+
+
+def test_direct3d12_game_gets_the_proxy_beside_its_exe(tmp_path):
+    zip_path = tmp_path / "Hades.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("Ship/Hades2.exe", b"MZ" + b"\0" * 100)
+    game = pw_quick.Game(name="Hades II", slug="hades-ii", exe="Ship/Hades2.exe", bits=64, graphics="d3d12")
+    sender = pw_quick.Sender.__new__(pw_quick.Sender)
+    sender.game, sender.mono, sender.source = game, None, pw_quick.Source(zip_path)
+    found = sender.stand_ins()
+    assert sorted(posixpath.basename(key) for key in found) == sorted(pw_quick.D3D12_FILES)
+    assert all(key.startswith("drive_c/Games/hades-ii/Ship/") for key in found), found
+    assert sender.environment()["PW_FAKE_RAM_GB"] == "16"

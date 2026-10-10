@@ -82,7 +82,14 @@ MONO_KEY = "Software\\Wine\\Mono"
 MONO_MARKER = ".pw-complete"
 UNSHARE_LIMIT = 512 << 20
 DXVK_DLLS = ("d3d8", "d3d9", "d3d10core", "d3d11", "dxgi")
-GRAPHICS = ("auto", "gdi", "dxvk", "opengl")
+GRAPHICS = ("auto", "gdi", "dxvk", "d3d12", "opengl")
+# Direct3D 12 games: DXVK for dxgi (and the older Direct3D), and beside the
+# game's exe vkd3d-proton 3.0.1 behind a small proxy d3d12.dll
+# (tools/d3d12_proxy): Windows' ordinals, a feature level the PS5's device
+# can make (it tops out at 11_1; Hades II asks for 12_1), and a RAM floor
+# for games that check (Wine reports about 546 MB on the console).
+D3D12_FILES = ("d3d12.dll", "d3d12_original.dll", "d3d12core.dll")
+D3D12_ENVIRONMENT = {"PW_FAKE_RAM_GB": "16"}
 SCALING = ("fit", "integer", "stretch")
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 # Files a zip or a copied folder carries that the game does not need.
@@ -102,6 +109,7 @@ PRESETS = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "pre
 # it. tools/build_steamworks.sh makes the stand-in (MIT, as Steamworks.NET),
 # whose SteamAPI.Init answers false without Steam.
 STUBS = PRESETS.parent / "stubs"
+D3D12_DIR = PRESETS.parent / "d3d12"
 STUB_ASSEMBLIES = ("Steamworks.NET",)
 STATE_DIR = Path(os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_STATE_HOME")
                  or Path.home() / ".local" / "state") / "prospero-win" / "quick"
@@ -426,6 +434,10 @@ class Game:
     checks: list = field(default_factory=list)     # pw_autoconfig.Check
 
     @property
+    def uses_dxvk(self) -> bool:
+        return self.graphics in ("dxvk", "d3d12")
+
+    @property
     def mono(self) -> bool:
         return self.engine in MONO_ENGINES
 
@@ -472,10 +484,12 @@ class Game:
             lines.append(f"arguments = {self.arguments}")
         if self.graphics == "dxvk":
             lines.append(f"dll_overrides = {','.join(DXVK_DLLS)}=n")
+        elif self.graphics == "d3d12":
+            lines.append(f"dll_overrides = {','.join(DXVK_DLLS)},d3d12,d3d12core=n")
         elif self.graphics == "opengl":
             lines.append("dll_overrides = opengl32=b")
         lines += [f"prefix = {self.slug}", "runtime = wine-wow64", f"architecture = pe{self.bits}",
-                  f"graphics = {self.graphics}",
+                  f"graphics = {'dxvk' if self.graphics == 'd3d12' else self.graphics}",
                   "", "[display]", f"desktop = {self.desktop}", f"scaling = {self.scaling}"]
         if not self.show_fps:
             lines.append("show_fps = false")
@@ -823,11 +837,11 @@ class Sender:
         if BASE_LINKS not in base.files:
             raise QuickError(f"{base.path} has no {BASE_LINKS}: make the base prefix with "
                              "tools/pw_base_prefix.py, which keeps Wine's links the way the console reads them")
-        if game.graphics == "dxvk" and not dxvk:
+        if game.uses_dxvk and not dxvk:
             raise QuickError("the game uses DXVK, and no DXVK DLLs were given")
         self.remote, self.game, self.source, self.base = remote, game, source, base
         self.mono = mono if game.mono else None
-        self.dxvk, self.cpu_dll = (dxvk or {}) if game.graphics == "dxvk" else {}, cpu_dll
+        self.dxvk, self.cpu_dll = (dxvk or {}) if game.uses_dxvk else {}, cpu_dll
         self.root = remote_root.rstrip("/")
         self.remote_prefix = f"{self.root}/prefixes/{game.slug}"
         self.remote_mono = f"{self.root}/shared/{MONO_NAME}"
@@ -853,7 +867,7 @@ class Sender:
                 data = self.base.read(key)
                 data = apply_reg(data, key, self.reg_entries(), self.game.bits)
                 if key == "user.reg":
-                    data = set_environment(data, self.game.environment)
+                    data = set_environment(data, self.environment())
                     data = set_values(data, FONT_KEY, font_replacements(self.base))
                     if self.mono is not None:
                         runtime = "Z:" + self.remote_mono.replace("/", "\\")
@@ -878,7 +892,10 @@ class Sender:
             else:
                 items[target] = Item(target, size, open=lambda key=key: self.source.open(key))
         for key, data in self.stand_ins().items():
-            self.say(f"{posixpath.basename(key)}: a stand-in, because the game names it and doesn't ship it")
+            if posixpath.basename(key) in D3D12_FILES:
+                self.say(f"{posixpath.basename(key)}: Direct3D 12 through vkd3d-proton, beside the game")
+            else:
+                self.say(f"{posixpath.basename(key)}: a stand-in, because the game names it and doesn't ship it")
             items[key] = Item(key, len(data), data=data)
         for key, data in self.dxvk.items():
             items[key] = Item(key, len(data), data=data)
@@ -890,6 +907,13 @@ class Sender:
                 dirs.add(parent)
                 parent = posixpath.dirname(parent)
         return sorted(items.values(), key=lambda item: item.key), dirs
+
+    def environment(self) -> dict[str, str]:
+        """The game's variables, with the Direct3D 12 proxy's RAM floor for a
+        d3d12 game unless the game's settings name it."""
+        if self.game.graphics == "d3d12":
+            return {**D3D12_ENVIRONMENT, **self.game.environment}
+        return dict(self.game.environment)
 
     def reg_entries(self) -> list:
         """What the .reg files in the game's folder put in the registry."""
@@ -909,17 +933,24 @@ class Sender:
         return entries
 
     def stand_ins(self) -> dict[str, bytes]:
-        """STUB_ASSEMBLIES the game's exe names and its folder lacks, by the
-        prefix path each goes to, beside the exe."""
+        """Files the sender adds beside the game's exe, by prefix path: the
+        Direct3D 12 proxy and vkd3d-proton for a d3d12 game, and
+        STUB_ASSEMBLIES the exe names and its folder lacks."""
+        found = {}
+        if self.game.graphics == "d3d12":
+            here = posixpath.dirname(f"{self.game.folder}/{self.game.exe}")
+            for name in D3D12_FILES:
+                if not (D3D12_DIR / name).is_file():
+                    raise QuickError(f"{name} isn't in {D3D12_DIR}: this sender build lacks Direct3D 12")
+                found[f"{here}/{name}"] = (D3D12_DIR / name).read_bytes()
         if self.mono is None:
-            return {}
+            return found
         try:
             exe = self.source.read(self.game.exe, SCAN_LIMIT)
         except (OSError, KeyError):
             return {}
         here = posixpath.dirname(self.game.exe)
         present = {key.lower() for key in self.source.files}
-        found = {}
         for name in STUB_ASSEMBLIES:
             dll = posixpath.join(here, f"{name}.dll")
             stub = STUBS / f"{name}.dll"
@@ -1034,11 +1065,11 @@ class Sender:
             entries = [entry for entry in self.reg_entries() if entry[0] == name]
             if name == "system.reg" and not entries:
                 continue
-            if name == "user.reg" and not entries and self.mono is None:
-                continue
             path = f"{self.remote_prefix}/{name}"
             registry = self.remote.read(path)
             changed = apply_reg(registry, name, entries, self.game.bits)
+            if name == "user.reg":
+                changed = set_environment(changed, self.environment())
             if name == "user.reg" and self.mono is not None:
                 runtime = "Z:" + self.remote_mono.replace("/", "\\")
                 changed = set_values(changed, MONO_KEY, {"RuntimePath": runtime})
@@ -1430,7 +1461,7 @@ def main(argv: list[str] | None = None) -> int:
         game.winedebug = args.winedebug
         print(f"pw_quick: {game.name} ({game.slug}): {game.exe}, {game.bits}-bit, graphics {game.graphics}")
         dxvk = None
-        if game.graphics == "dxvk":
+        if game.uses_dxvk:
             dxvk = dxvk_files(Path(args.dxvk) if args.dxvk else fetch_dxvk())
         remote = connect(args.host, args.port)
         mono = Source(args.mono) if game.mono and args.mono else None

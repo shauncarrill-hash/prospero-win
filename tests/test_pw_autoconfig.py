@@ -91,12 +91,13 @@ def test_xna_named_by_the_exe() -> None:
     assert game.engine == "XNA" and game.graphics == "dxvk", (game.engine, game.graphics)
 
 
-def test_direct3d12_only_gets_wines_own() -> None:
+def test_direct3d12_only_gets_vkd3d_proton() -> None:
     game = suggest({"D/D.exe": pe(64, ("d3d12.dll", "kernel32.dll"), padding=100_000)})
-    assert game.graphics == "auto" and "Direct3D 12" in text(game), text(game)
+    assert game.graphics == "d3d12" and "Direct3D 12" in text(game), text(game)
     # DXVK's dxgi has no Direct3D 12 adapter: Hades II imports only these two
     game = suggest({"D/D.exe": pe(64, ("d3d12.dll", "dxgi.dll"), padding=100_000)})
-    assert game.graphics == "auto" and "stop" not in levels(game), (game.graphics, text(game))
+    assert game.graphics == "d3d12" and "stop" not in levels(game), (game.graphics, text(game))
+    assert "d3d12,d3d12core=n" in game.profile() and "graphics = dxvk" in game.profile()
     game = suggest({"D/D.exe": pe(64, ("d3d12.dll", "d3d11.dll"), padding=100_000)})
     assert "stop" not in levels(game) and game.graphics == "dxvk", text(game)
 

@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pw_quick  # noqa: E402
 from pw_quick import QuickError  # noqa: E402
 
-VERSION = "4.21"
+VERSION = "4.22"
 SECRET = "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=RDdQw4w9WgXcQ&start_radio=1"
 TITLE = f"prospero-win sender v{VERSION}: send a game to your PS5"
 SETTINGS = pw_quick.STATE_DIR / "settings.json"
@@ -37,6 +37,7 @@ BASE_NAME = "prospero-base-prefix.zip"
 RESOLUTIONS = ("1920x1080", "1280x720", "2560x1440", "3840x2160", "1024x768", "800x600")
 GRAPHICS_LABELS = {
     "dxvk": "Direct3D 8-11 (DXVK)",
+    "d3d12": "Direct3D 12 (vkd3d-proton)",
     "opengl": "OpenGL",
     "gdi": "2D (GDI)",
     "auto": "Automatic (Vulkan, DirectDraw)",
@@ -657,7 +658,7 @@ class App:
             self.events.put(("status", "Opening the base prefix…"))
             base = pw_quick.Source(base_path)
             dxvk = None
-            if game.graphics == "dxvk":
+            if game.uses_dxvk:
                 self.events.put(("status", "Getting DXVK (downloaded once)…"))
                 dxvk = pw_quick.dxvk_files(pw_quick.fetch_dxvk())
             mono = None
